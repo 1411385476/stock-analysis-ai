@@ -1,8 +1,8 @@
-from datetime import datetime
 from contextlib import contextmanager
+from datetime import datetime
 import os
 import socket
-from typing import Optional
+from typing import Callable, Optional
 
 import numpy as np
 import pandas as pd
@@ -15,6 +15,24 @@ from app.utils import normalize_symbol
 logger = get_logger(__name__)
 LAST_FETCH_ERROR: Optional[str] = None
 _DEFAULT_SOCKET_TIMEOUT_SEC = float(os.getenv("OPENCLAW_YF_SOCKET_TIMEOUT_SEC", "8"))
+UNIVERSE_ALL = "all"
+UNIVERSE_HS300 = "hs300"
+UNIVERSE_ZZ500 = "zz500"
+_UNIVERSE_TO_INDEX_CODE = {
+    UNIVERSE_HS300: "000300",
+    UNIVERSE_ZZ500: "000905",
+}
+_UNIVERSE_ALIASES = {
+    "all": UNIVERSE_ALL,
+    "a": UNIVERSE_ALL,
+    "full": UNIVERSE_ALL,
+    "hs300": UNIVERSE_HS300,
+    "000300": UNIVERSE_HS300,
+    "沪深300": UNIVERSE_HS300,
+    "zz500": UNIVERSE_ZZ500,
+    "000905": UNIVERSE_ZZ500,
+    "中证500": UNIVERSE_ZZ500,
+}
 
 
 def _init_yfinance_cache() -> None:
@@ -46,8 +64,142 @@ def _temporary_socket_timeout(seconds: float):
 _init_yfinance_cache()
 
 
+@contextmanager
+def _temporary_disable_proxies():
+    """
+    Temporarily clear common proxy env vars.
+    Useful when a stale proxy causes ProxyError for direct data APIs.
+    """
+    proxy_keys = [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "NO_PROXY",
+        "no_proxy",
+    ]
+    saved = {k: os.environ.get(k) for k in proxy_keys}
+    try:
+        for key in proxy_keys:
+            os.environ.pop(key, None)
+        os.environ["NO_PROXY"] = "*"
+        os.environ["no_proxy"] = "*"
+        yield
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def _looks_like_proxy_error(exc: Exception) -> bool:
+    text = f"{type(exc).__name__}: {exc}"
+    lower = text.lower()
+    return "proxyerror" in lower or "unable to connect to proxy" in lower
+
+
+def _call_akshare_with_proxy_fallback(call: Callable[[], pd.DataFrame], operation: str) -> pd.DataFrame:
+    """
+    Call an AkShare API once with current env; if proxy errors are detected,
+    retry once with proxy env vars temporarily disabled.
+    """
+    try:
+        return call()
+    except Exception as first_exc:
+        if not _looks_like_proxy_error(first_exc):
+            raise
+        logger.warning("%s 首次请求命中代理错误，尝试禁用代理后重试: %s", operation, first_exc)
+        with _temporary_disable_proxies():
+            return call()
+
+
 def get_last_fetch_error() -> Optional[str]:
     return LAST_FETCH_ERROR
+
+
+def normalize_universe(universe: str) -> str:
+    raw = str(universe or UNIVERSE_ALL).strip().lower()
+    if raw in _UNIVERSE_ALIASES:
+        return _UNIVERSE_ALIASES[raw]
+    return raw
+
+
+def _extract_symbols_from_constituents(df: pd.DataFrame) -> set[str]:
+    if df is None or df.empty:
+        return set()
+
+    candidate_columns = [
+        "品种代码",
+        "成分券代码",
+        "代码",
+        "symbol",
+        "stock_code",
+        "证券代码",
+    ]
+    chosen_col: Optional[str] = None
+    for col in candidate_columns:
+        if col in df.columns:
+            chosen_col = col
+            break
+
+    if not chosen_col:
+        for col in df.columns:
+            if "代码" in str(col):
+                chosen_col = col
+                break
+
+    if not chosen_col:
+        return set()
+
+    out = (
+        df[chosen_col]
+        .astype(str)
+        .str.extract(r"(\d{6})", expand=False)
+        .dropna()
+        .str.zfill(6)
+    )
+    return set(out.tolist())
+
+
+def fetch_universe_symbols(universe: str = UNIVERSE_ALL) -> Optional[set[str]]:
+    normalized = normalize_universe(universe)
+    if normalized == UNIVERSE_ALL:
+        return None
+
+    index_code = _UNIVERSE_TO_INDEX_CODE.get(normalized)
+    if not index_code:
+        raise ValueError(f"不支持的 universe: {universe}")
+
+    try:
+        import akshare as ak
+    except Exception as exc:
+        raise RuntimeError(f"无法导入 akshare: {type(exc).__name__}: {exc}") from exc
+
+    fetch_attempts: list[tuple[str, Callable[[], pd.DataFrame]]] = []
+    if hasattr(ak, "index_stock_cons"):
+        fetch_attempts.append(("index_stock_cons", lambda: ak.index_stock_cons(symbol=index_code)))
+    if hasattr(ak, "index_stock_cons_csindex"):
+        fetch_attempts.append(("index_stock_cons_csindex", lambda: ak.index_stock_cons_csindex(symbol=index_code)))
+    if hasattr(ak, "stock_zh_index_cons_csindex"):
+        fetch_attempts.append(("stock_zh_index_cons_csindex", lambda: ak.stock_zh_index_cons_csindex(symbol=index_code)))
+
+    errors: list[str] = []
+    for name, fn in fetch_attempts:
+        try:
+            df = _call_akshare_with_proxy_fallback(fn, f"{name}({index_code})")
+            symbols = _extract_symbols_from_constituents(df)
+            if symbols:
+                return symbols
+            errors.append(f"{name}: 返回为空或字段无法识别")
+        except Exception as exc:
+            errors.append(f"{name}: {type(exc).__name__}: {exc}")
+
+    if not fetch_attempts:
+        raise RuntimeError("akshare 当前版本不包含指数成分股接口")
+    raise RuntimeError(f"获取 {normalized} 成分股失败: {' | '.join(errors)}")
 
 
 def resolve_yf_symbol(symbol: str) -> str:
@@ -185,12 +337,15 @@ def _fetch_history_akshare(symbol: str, start: str, end: str) -> tuple[pd.DataFr
     end_date = end.replace("-", "")
     try:
         with _temporary_socket_timeout(_DEFAULT_SOCKET_TIMEOUT_SEC):
-            raw = ak.stock_zh_a_hist(
-                symbol=ak_symbol,
-                period="daily",
-                start_date=start_date,
-                end_date=end_date,
-                adjust="",
+            raw = _call_akshare_with_proxy_fallback(
+                lambda: ak.stock_zh_a_hist(
+                    symbol=ak_symbol,
+                    period="daily",
+                    start_date=start_date,
+                    end_date=end_date,
+                    adjust="",
+                ),
+                f"stock_zh_a_hist({ak_symbol})",
             )
     except Exception as exc:
         return pd.DataFrame(), f"akshare请求异常: {type(exc).__name__}: {exc}"
@@ -255,15 +410,27 @@ def fetch_ashare_spot_snapshot() -> pd.DataFrame:
         logger.error(err)
         raise RuntimeError(err) from exc
 
-    try:
-        raw = ak.stock_zh_a_spot_em()
-    except Exception as exc:
-        err = f"拉取A股全市场快照失败: {type(exc).__name__}: {exc}"
-        logger.error(err)
-        raise RuntimeError(err) from exc
+    raw = pd.DataFrame()
+    attempt_errors: list[str] = []
+    source_attempts: list[tuple[str, Callable[[], pd.DataFrame]]] = [
+        ("eastmoney", lambda: ak.stock_zh_a_spot_em()),
+        ("sina", lambda: ak.stock_zh_a_spot()),
+    ]
+
+    for source_name, fn in source_attempts:
+        try:
+            raw = _call_akshare_with_proxy_fallback(fn, f"stock_zh_a_spot[{source_name}]")
+            if raw is not None and not raw.empty:
+                logger.info("A股快照获取成功: source=%s, rows=%s", source_name, len(raw))
+                break
+            attempt_errors.append(f"{source_name}: 返回空数据")
+        except Exception as exc:
+            attempt_errors.append(f"{source_name}: {type(exc).__name__}: {exc}")
 
     if raw is None or raw.empty:
-        return pd.DataFrame()
+        err = f"拉取A股全市场快照失败: {' | '.join(attempt_errors)}"
+        logger.error(err)
+        raise RuntimeError(err)
 
     col_map = {
         "代码": "symbol",

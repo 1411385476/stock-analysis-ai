@@ -6,7 +6,7 @@
 ## 0. 当前进度（截至 2026-03-05）
 
 - M1（第1周）：已完成
-- M2（第2周）：未开始
+- M2（第2周）：已完成
 - M3（第3周）：未开始
 - M4（第4周）：未开始
 - M5（第5周）：未开始
@@ -103,6 +103,22 @@ openclaw-finance/
 - 一次扫描 5000+ 标的可在可接受时间完成
 - 输出结果字段完整、可复现
 
+当前状态：已完成（已落地 universe 过滤、评分字段与 CSV/Markdown 导出）
+
+基准记录（2026-03-05，北京时间）：
+
+- 样本文件：`data/ashare_snapshots/ashare_snapshot_20260305_194702.csv`
+- 样本规模：5486 标的
+- 命令：`python stock_analyzer.py --scan --snapshot-file data/ashare_snapshots/ashare_snapshot_20260305_194702.csv --universe all --top 20`
+- 用时：0.57s / 0.56s / 0.55s（平均 0.56s）
+- 结论：5000+ 标的扫描在当前机器上可在 1 秒内完成
+
+评分参数（可复现、可调）：
+
+- `.env` 支持：`SCORE_WEIGHT_TREND`、`SCORE_WEIGHT_VOLUME_PRICE`、`SCORE_WEIGHT_VOLATILITY`、`SCORE_WEIGHT_TURNOVER`
+- 默认值：`0.35 / 0.30 / 0.15 / 0.20`
+- 运行时自动归一化，避免配置和不为 1 造成结果漂移
+
 ### M3（第3周）：回测引擎增强
 
 - 引入交易成本模型（手续费+滑点）
@@ -159,8 +175,8 @@ python stock_analyzer.py 600519 --backtest
 python stock_analyzer.py --sync-a-share --batch-size 300 --runs 1
 python stock_analyzer.py --keyword 芯片 --min-turnover 3 --top 30
 
-# 后续建议新增
-python -m app.cli scan --universe hs300 --top 20
+# M2 已支持
+python stock_analyzer.py --scan --universe hs300 --top 20
 python -m app.cli portfolio --rebalance
 python -m app.cli report --daily
 ```

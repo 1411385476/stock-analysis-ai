@@ -32,5 +32,6 @@ Thumbs.db
 # Runtime outputs
 charts/*.png
 data/ashare_snapshots/
+data/candidate_pools/
 portfolio.json
 *.log

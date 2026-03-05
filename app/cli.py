@@ -5,6 +5,7 @@ from app.config import CONFIG
 from app.errors import ErrorCode, format_error
 from app.logging_config import setup_logging
 from data.repository.snapshot_store import (
+    export_candidate_pool,
     format_screen_report,
     screen_ashare_snapshot,
     sync_ashare_snapshots,
@@ -20,6 +21,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-llm", action="store_true", help="禁用Qwen解读")
     parser.add_argument("--backtest", action="store_true", help="启用策略模板回测")
     parser.add_argument("--sync-a-share", action="store_true", help="分批拉取A股全市场快照并落盘")
+    parser.add_argument("--scan", action="store_true", help="执行候选池扫描（可与 --universe 配合）")
     parser.add_argument("--batch-size", type=int, default=300, help="快照分批文件大小，默认300")
     parser.add_argument("--interval-seconds", type=int, default=0, help="定时拉取间隔秒数，默认0(不循环)")
     parser.add_argument("--runs", type=int, default=1, help="定时拉取轮数，默认1")
@@ -33,9 +35,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-turnover", type=float, help="最大换手率筛选(%%)")
     parser.add_argument("--min-market-cap", type=float, help="最小总市值筛选")
     parser.add_argument("--max-market-cap", type=float, help="最大总市值筛选")
-    parser.add_argument("--sort-by", default="pct_change", help="筛选排序字段，默认 pct_change")
+    parser.add_argument("--universe", default="all", help="候选池范围: all/hs300/zz500（支持中文别名）")
+    parser.add_argument("--sort-by", default="score_total", help="筛选排序字段，默认 score_total")
     parser.add_argument("--asc", action="store_true", help="筛选结果升序排序(默认降序)")
     parser.add_argument("--top", type=int, default=20, help="筛选返回条数，默认20")
+    parser.add_argument("--candidate-output-dir", help="候选池导出目录（默认 data/candidate_pools）")
     return parser.parse_args()
 
 
@@ -51,6 +55,8 @@ def has_screen_request(args: argparse.Namespace) -> bool:
             args.max_turnover is not None,
             args.min_market_cap is not None,
             args.max_market_cap is not None,
+            args.scan,
+            str(args.universe).strip().lower() not in {"", "all"},
         ]
     )
 
@@ -74,6 +80,7 @@ def main() -> int:
     if screen_requested:
         screened_df = screen_ashare_snapshot(
             snapshot_file=args.snapshot_file,
+            universe=args.universe,
             keyword=args.keyword,
             min_price=args.min_price,
             max_price=args.max_price,
@@ -88,6 +95,15 @@ def main() -> int:
             top_n=args.top,
         )
         print(format_screen_report(screened_df, args.snapshot_file))
+        csv_path, md_path = export_candidate_pool(
+            screened_df,
+            universe=args.universe,
+            output_dir=args.candidate_output_dir,
+        )
+        if csv_path and md_path:
+            print("\n候选池文件已导出:")
+            print(f"- CSV: {csv_path}")
+            print(f"- Markdown: {md_path}")
         if not args.symbol:
             return 0
 
