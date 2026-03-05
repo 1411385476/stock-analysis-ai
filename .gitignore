@@ -33,5 +33,6 @@ Thumbs.db
 charts/*.png
 data/ashare_snapshots/
 data/candidate_pools/
+data/backtests/
 portfolio.json
 *.log

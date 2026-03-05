@@ -13,6 +13,7 @@ class AppConfig:
     portfolio_file: str = _expand(os.getenv("PORTFOLIO_FILE", "~/openclaw-finance/portfolio.json"))
     chart_dir: str = _expand(os.getenv("CHART_DIR", "~/openclaw-finance/charts"))
     data_dir: str = _expand(os.getenv("DATA_DIR", "~/openclaw-finance/data"))
+    backtest_output_dir: str = _expand(os.getenv("BACKTEST_OUTPUT_DIR", "~/openclaw-finance/data/backtests"))
     qwen_base_url: str = os.getenv("QWEN_BASE_URL", "http://127.0.0.1:11434/v1")
     qwen_model: str = os.getenv("QWEN_MODEL", "qwen2.5:32b")
     qwen_api_key: str = os.getenv("QWEN_API_KEY", "EMPTY")

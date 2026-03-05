@@ -7,12 +7,23 @@ import pandas as pd
 
 from data.providers.market_data import (
     _call_akshare_with_proxy_fallback,
+    _fetch_history_akshare,
+    _history_provider_order,
+    _is_akshare_history_temporarily_disabled,
+    _mark_akshare_history_temporarily_disabled,
+    _reset_akshare_history_circuit_for_tests,
     _temporary_disable_proxies,
     fetch_ashare_spot_snapshot,
 )
 
 
 class ProxyFallbackTestCase(unittest.TestCase):
+    def setUp(self) -> None:
+        _reset_akshare_history_circuit_for_tests()
+
+    def tearDown(self) -> None:
+        _reset_akshare_history_circuit_for_tests()
+
     def test_temporary_disable_proxies_restores_environment(self) -> None:
         old_http = os.environ.get("HTTP_PROXY")
         old_no_proxy = os.environ.get("NO_PROXY")
@@ -136,6 +147,31 @@ class ProxyFallbackTestCase(unittest.TestCase):
 
         self.assertIn("eastmoney", str(ctx.exception))
         self.assertIn("sina", str(ctx.exception))
+
+    def test_history_provider_order_skips_akshare_when_circuit_open(self) -> None:
+        _mark_akshare_history_temporarily_disabled("unit-test", cooldown_sec=60)
+        order = _history_provider_order("600519")
+        self.assertIn("yfinance", order)
+        self.assertNotIn("akshare", order)
+
+    def test_fetch_history_akshare_short_circuit_when_circuit_open(self) -> None:
+        _mark_akshare_history_temporarily_disabled("unit-test", cooldown_sec=60)
+        data, error = _fetch_history_akshare("600519", "2025-01-01", "2025-02-01")
+        self.assertTrue(data.empty)
+        self.assertIsNotNone(error)
+        self.assertIn("熔断中", str(error))
+
+    def test_fetch_history_akshare_marks_circuit_on_network_error(self) -> None:
+        def hist(*_, **__) -> pd.DataFrame:
+            raise ConnectionError("Remote end closed connection without response")
+
+        fake_ak = types.SimpleNamespace(stock_zh_a_hist=hist)
+        with patch.dict("sys.modules", {"akshare": fake_ak}):
+            data, error = _fetch_history_akshare("600519", "2025-01-01", "2025-02-01")
+
+        self.assertTrue(data.empty)
+        self.assertIn("akshare请求异常", str(error))
+        self.assertTrue(_is_akshare_history_temporarily_disabled())
 
 
 if __name__ == "__main__":

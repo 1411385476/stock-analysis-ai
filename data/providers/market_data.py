@@ -2,6 +2,7 @@ from contextlib import contextmanager
 from datetime import datetime
 import os
 import socket
+import time
 from typing import Callable, Optional
 
 import numpy as np
@@ -15,6 +16,10 @@ from app.utils import normalize_symbol
 logger = get_logger(__name__)
 LAST_FETCH_ERROR: Optional[str] = None
 _DEFAULT_SOCKET_TIMEOUT_SEC = float(os.getenv("OPENCLAW_YF_SOCKET_TIMEOUT_SEC", "8"))
+_AKSHARE_HISTORY_COOLDOWN_SEC = int(os.getenv("OPENCLAW_AKSHARE_HISTORY_COOLDOWN_SEC", "180"))
+_AKSHARE_HISTORY_DISABLED_UNTIL = 0.0
+_AKSHARE_HISTORY_DISABLE_REASON: Optional[str] = None
+_AKSHARE_PROXY_WARNED_ONCE: set[str] = set()
 UNIVERSE_ALL = "all"
 UNIVERSE_HS300 = "hs300"
 UNIVERSE_ZZ500 = "zz500"
@@ -101,6 +106,61 @@ def _looks_like_proxy_error(exc: Exception) -> bool:
     return "proxyerror" in lower or "unable to connect to proxy" in lower
 
 
+def _looks_like_network_error(exc: Exception) -> bool:
+    text = f"{type(exc).__name__}: {exc}".lower()
+    keywords = [
+        "proxyerror",
+        "unable to connect to proxy",
+        "connectionerror",
+        "name resolution",
+        "failed to resolve",
+        "remote end closed connection",
+        "connection aborted",
+        "dnserror",
+        "timed out",
+    ]
+    return any(k in text for k in keywords)
+
+
+def _is_akshare_history_temporarily_disabled() -> bool:
+    return time.time() < _AKSHARE_HISTORY_DISABLED_UNTIL
+
+
+def _get_akshare_history_disabled_message() -> Optional[str]:
+    if not _is_akshare_history_temporarily_disabled():
+        return None
+    remaining = int(max(0.0, _AKSHARE_HISTORY_DISABLED_UNTIL - time.time()))
+    reason = _AKSHARE_HISTORY_DISABLE_REASON or "recent network failures"
+    return f"akshare历史源临时熔断中(剩余{remaining}s): {reason}"
+
+
+def _mark_akshare_history_temporarily_disabled(reason: str, cooldown_sec: Optional[int] = None) -> None:
+    global _AKSHARE_HISTORY_DISABLED_UNTIL, _AKSHARE_HISTORY_DISABLE_REASON
+    cooldown = _AKSHARE_HISTORY_COOLDOWN_SEC if cooldown_sec is None else int(cooldown_sec)
+    cooldown = max(cooldown, 0)
+    if cooldown <= 0:
+        return
+    now = time.time()
+    until = now + cooldown
+    if until <= _AKSHARE_HISTORY_DISABLED_UNTIL:
+        return
+    _AKSHARE_HISTORY_DISABLED_UNTIL = until
+    _AKSHARE_HISTORY_DISABLE_REASON = reason
+    logger.warning("akshare历史源进入熔断 %ss: %s", cooldown, reason)
+
+
+def _clear_akshare_history_temporarily_disabled() -> None:
+    global _AKSHARE_HISTORY_DISABLED_UNTIL, _AKSHARE_HISTORY_DISABLE_REASON
+    _AKSHARE_HISTORY_DISABLED_UNTIL = 0.0
+    _AKSHARE_HISTORY_DISABLE_REASON = None
+
+
+def _reset_akshare_history_circuit_for_tests() -> None:
+    """Test helper: reset in-process akshare history circuit breaker state."""
+    _clear_akshare_history_temporarily_disabled()
+    _AKSHARE_PROXY_WARNED_ONCE.clear()
+
+
 def _call_akshare_with_proxy_fallback(call: Callable[[], pd.DataFrame], operation: str) -> pd.DataFrame:
     """
     Call an AkShare API once with current env; if proxy errors are detected,
@@ -111,7 +171,9 @@ def _call_akshare_with_proxy_fallback(call: Callable[[], pd.DataFrame], operatio
     except Exception as first_exc:
         if not _looks_like_proxy_error(first_exc):
             raise
-        logger.warning("%s 首次请求命中代理错误，尝试禁用代理后重试: %s", operation, first_exc)
+        if operation not in _AKSHARE_PROXY_WARNED_ONCE:
+            logger.warning("%s 首次请求命中代理错误，尝试禁用代理后重试: %s", operation, first_exc)
+            _AKSHARE_PROXY_WARNED_ONCE.add(operation)
         with _temporary_disable_proxies():
             return call()
 
@@ -253,11 +315,18 @@ def _history_provider_order(symbol: str) -> list[str]:
     for item in raw_items:
         if item == "auto":
             if _is_mainland_a_share_symbol(symbol):
-                order.extend(["akshare", "yfinance"])
+                if _is_akshare_history_temporarily_disabled():
+                    order.append("yfinance")
+                else:
+                    order.extend(["akshare", "yfinance"])
             else:
                 order.append("yfinance")
             continue
-        if item in {"akshare", "yfinance"}:
+        if item == "akshare":
+            if not _is_akshare_history_temporarily_disabled():
+                order.append(item)
+            continue
+        if item == "yfinance":
             order.append(item)
 
     if not order:
@@ -324,6 +393,10 @@ def _fetch_history_yfinance(symbol: str, start: str, end: str) -> tuple[pd.DataF
 
 
 def _fetch_history_akshare(symbol: str, start: str, end: str) -> tuple[pd.DataFrame, Optional[str]]:
+    disabled_message = _get_akshare_history_disabled_message()
+    if disabled_message:
+        return pd.DataFrame(), disabled_message
+
     ak_symbol = _resolve_akshare_symbol(symbol)
     if not ak_symbol:
         return pd.DataFrame(), "akshare仅支持A股6位代码（含 .SS/.SZ/.BJ）"
@@ -348,6 +421,8 @@ def _fetch_history_akshare(symbol: str, start: str, end: str) -> tuple[pd.DataFr
                 f"stock_zh_a_hist({ak_symbol})",
             )
     except Exception as exc:
+        if _looks_like_network_error(exc):
+            _mark_akshare_history_temporarily_disabled(str(exc))
         return pd.DataFrame(), f"akshare请求异常: {type(exc).__name__}: {exc}"
 
     if raw is None or raw.empty:
@@ -372,6 +447,7 @@ def _fetch_history_akshare(symbol: str, start: str, end: str) -> tuple[pd.DataFr
     normalized = _normalize_ohlcv_frame(raw.rename(columns=col_map).copy())
     if normalized.empty:
         return pd.DataFrame(), f"akshare字段不完整或清洗后为空: 实际字段={list(raw.columns)}"
+    _clear_akshare_history_temporarily_disabled()
     return normalized, None
 
 
