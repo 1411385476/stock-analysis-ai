@@ -4,7 +4,7 @@ ARGS ?=
 SMOKE_OUTPUT ?= /tmp/stock_skill_output.txt
 SMOKE_STRICT ?= 0
 
-.PHONY: analyze test sync screen dashboard smoke-skill pipeline-daily regression-snapshot
+.PHONY: analyze test sync screen dashboard smoke-skill pipeline-daily regression-snapshot preflight
 
 analyze:
 	$(PYTHON) stock_analyzer.py $(SYMBOL) $(ARGS)
@@ -26,6 +26,11 @@ pipeline-daily:
 
 regression-snapshot:
 	$(PYTHON) scripts/check_strategy_regression.py --baseline tests/fixtures/strategy_regression_baseline.json --output /tmp/strategy_regression_latest.json $(ARGS)
+
+preflight:
+	$(PYTHON) -m unittest discover -s tests -v
+	$(PYTHON) scripts/check_strategy_regression.py --baseline tests/fixtures/strategy_regression_baseline.json --output /tmp/strategy_regression_latest.json
+	$(MAKE) smoke-skill SMOKE_OUTPUT=tests/fixtures/skill_output_ok.txt SMOKE_STRICT=1
 
 smoke-skill:
 	@if [ ! -f "$(SMOKE_OUTPUT)" ]; then \

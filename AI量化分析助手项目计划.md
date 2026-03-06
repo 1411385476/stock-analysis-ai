@@ -11,6 +11,7 @@
 - M4（第4周）：已完成（已落地止损/止盈、风险日报、回撤熔断、行业集中度约束与单票权重上限）
 - M5（第5周）：已完成（已落地提示词拆分 + JSON schema + 安全规则 + 分析导出与齐全率统计 + 低温度稳定性评估并通过）
 - M6（第6周）：已完成（Plotly Dashboard MVP + OpenClaw 指令模板固化 + 使用/运维手册交付 + CI 冒烟验收）
+- M7（v0.7）：已完成（Week1~Week4 全部落地，含 CI 回归快照漂移告警）
 
 ## 1. 项目目标
 
@@ -75,7 +76,7 @@ openclaw-finance/
     integration/
 ```
 
-## 4. 里程碑与排期（6周）
+## 4. 里程碑与排期（7周，含 v0.7 规划）
 
 ### M1（第1周）：工程化重构 + 配置标准化
 
@@ -170,6 +171,35 @@ openclaw-finance/
 - 新用户按文档可在 30 分钟内跑通主流程
 
 当前状态：已完成（已新增 `dashboard/app.py`，支持 `python -m dashboard.app` 生成 `dashboard/dist/index.html`，包含单股分析、候选池评分、组合回测、风险日报四个板块；已补 `make dashboard` 快捷入口；已新增 `skills/stock-analyst/SKILL.md` 与 `docs/openclaw_templates.md` 固化 OpenClaw 分析/扫描/回测/风控模板，并明确单次触发、防重复、超时与失败回退策略；已新增 `docs/user_guide.md` 与 `docs/ops_runbook.md` 形成可交付手册，并接入 `.github/workflows/ci.yml` + `tests/fixtures/skill_output_ok.txt` 完成严格冒烟验收）
+
+### M7（v0.7，4周）：自动化运行与稳健性升级
+
+- Week 1：自动化日更流水线
+  - 串联 `sync -> scan -> backtest -> risk-report -> dashboard` 为定时任务（cron/systemd）。
+  - 增加失败重试、失败摘要日志与健康状态记录。
+  - 产物按日期目录落盘，支持追溯。
+- Week 2：策略稳健性增强
+  - 增加 Walk-forward（滚动训练/验证）评估。
+  - 增加参数稳健区间报告（避免单点最优过拟合）。
+  - 增加与基准/当前策略版本的分段对比。
+- Week 3：组合层升级
+  - 增加目标波动率控制与资金利用率约束。
+  - 增加周/月再平衡模式与统一调仓记录。
+  - 完成行业/单票/回撤约束联动解释（每次风控触发给出可读原因）。
+- Week 4：交付与接口
+  - 输出标准化 JSON 接口（供看板/外部系统消费）。
+  - 看板升级为 V2（参数对比、回测曲线对比、风险时序）。
+  - CI 增加策略回归快照（关键指标漂移告警）。
+
+验收标准：
+
+- 自动化流水线连续 7 天成功运行，失败可重试并有可读日志。
+- Walk-forward 报告可复现，包含分段收益、回撤、夏普。
+- 组合风控触发时可输出“触发条件 + 触发时点 + 处理动作”。
+- CI 保持绿色，`unittest + smoke-skill(strict)` 全通过。
+- 新用户按文档 20 分钟内跑通主流程。
+
+当前状态：已完成（Week1 日更流水线、Week2 Walk-forward+稳健区间+分段对比、Week3 目标波动率/资金利用率/周月再平衡/调仓记录、Week4 标准化 JSON + Dashboard V2 + CI 策略回归快照漂移告警均已落地）
 
 ## 5. 命令接口规划
 

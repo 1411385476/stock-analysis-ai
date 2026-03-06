@@ -127,9 +127,7 @@ tail -n 200 data/pipeline_runs/latest_health.json
 发布前执行：
 
 ```bash
-make test
-make regression-snapshot
-make smoke-skill SMOKE_OUTPUT=tests/fixtures/skill_output_ok.txt SMOKE_STRICT=1
+make preflight
 ```
 
 CI 绿灯后再合并/发布。
