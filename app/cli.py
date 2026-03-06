@@ -15,6 +15,10 @@ from llm.qwen_client import get_last_qwen_error, get_last_qwen_structured
 from llm.summarizer import evaluate_schema_completeness
 
 
+def _is_error_text(text: object) -> bool:
+    return isinstance(text, str) and text.startswith("[E_")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="股票行情分析器（单股分析 + A股全市场分批同步 + 条件筛选）")
     parser.add_argument("symbol", nargs="?", help="股票代码，例如 600519")
@@ -49,6 +53,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bt-grid-max-positions", help="网格最大持仓数列表，逗号分隔，例如 1,2,3")
     parser.add_argument("--bt-grid-sort-by", default="annual_return", help="网格排序字段，默认 annual_return")
     parser.add_argument("--bt-grid-top", type=int, default=10, help="网格结果展示Top N，默认10")
+    parser.add_argument("--bt-walk-forward", action="store_true", help="启用Walk-forward滚动评估（组合模式）")
+    parser.add_argument("--bt-wf-train-days", type=int, default=126, help="Walk-forward训练窗口交易日，默认126")
+    parser.add_argument("--bt-wf-test-days", type=int, default=63, help="Walk-forward测试窗口交易日，默认63")
+    parser.add_argument("--bt-wf-step-days", type=int, default=21, help="Walk-forward滚动步长交易日，默认21")
+    parser.add_argument("--bt-wf-sort-by", default="annual_return", help="Walk-forward训练段选参排序字段，默认 annual_return")
     parser.add_argument("--bt-save", action="store_true", help="导出回测结果到 JSON/Markdown 文件")
     parser.add_argument("--bt-output-dir", help="回测结果导出目录（默认 data/backtests）")
     parser.add_argument("--bt-compare-last", action="store_true", help="导出回测时自动对比同目标最近一次记录")
@@ -148,44 +157,48 @@ def main() -> int:
     if not args.symbol:
         if args.portfolio_symbols and args.backtest:
             symbols = [item.strip() for item in str(args.portfolio_symbols).split(",") if item.strip()]
-            print(
-                analyze_portfolio(
-                    symbols=symbols,
-                    start=args.start,
-                    end=args.end,
-                    bt_fee_rate=args.bt_fee_rate,
-                    bt_slippage_bps=args.bt_slippage_bps,
-                    bt_min_hold_days=args.bt_min_hold_days,
-                    bt_signal_confirm_days=args.bt_signal_confirm_days,
-                    bt_max_positions=args.bt_max_positions,
-                    bt_stop_loss_pct=args.bt_stop_loss_pct,
-                    bt_take_profit_pct=args.bt_take_profit_pct,
-                    bt_drawdown_circuit_pct=args.bt_drawdown_circuit_pct,
-                    bt_circuit_cooldown_days=args.bt_circuit_cooldown_days,
-                    bt_max_industry_weight=args.bt_max_industry_weight,
-                    bt_max_single_weight=args.bt_max_single_weight,
-                    industry_map_file=args.industry_map_file,
-                    industry_level=args.industry_level,
-                    bt_grid=args.bt_grid,
-                    bt_grid_fee_rates=args.bt_grid_fee_rates,
-                    bt_grid_slippage_bps=args.bt_grid_slippage_bps,
-                    bt_grid_min_hold_days=args.bt_grid_min_hold_days,
-                    bt_grid_signal_confirm_days=args.bt_grid_signal_confirm_days,
-                    bt_grid_max_positions=args.bt_grid_max_positions,
-                    bt_grid_sort_by=args.bt_grid_sort_by,
-                    bt_grid_top=args.bt_grid_top,
-                    bt_save=args.bt_save,
-                    bt_output_dir=args.bt_output_dir,
-                    bt_compare_last=args.bt_compare_last,
-                    risk_report=args.risk_report,
-                    risk_output_dir=args.risk_output_dir,
-                    risk_max_drawdown_limit=args.risk_max_drawdown_limit,
-                    risk_max_single_weight=args.risk_max_single_weight,
-                    risk_max_industry_weight=args.risk_max_industry_weight,
-                    risk_min_holdings=args.risk_min_holdings,
-                )
+            portfolio_text = analyze_portfolio(
+                symbols=symbols,
+                start=args.start,
+                end=args.end,
+                bt_fee_rate=args.bt_fee_rate,
+                bt_slippage_bps=args.bt_slippage_bps,
+                bt_min_hold_days=args.bt_min_hold_days,
+                bt_signal_confirm_days=args.bt_signal_confirm_days,
+                bt_max_positions=args.bt_max_positions,
+                bt_stop_loss_pct=args.bt_stop_loss_pct,
+                bt_take_profit_pct=args.bt_take_profit_pct,
+                bt_drawdown_circuit_pct=args.bt_drawdown_circuit_pct,
+                bt_circuit_cooldown_days=args.bt_circuit_cooldown_days,
+                bt_max_industry_weight=args.bt_max_industry_weight,
+                bt_max_single_weight=args.bt_max_single_weight,
+                industry_map_file=args.industry_map_file,
+                industry_level=args.industry_level,
+                bt_grid=args.bt_grid,
+                bt_grid_fee_rates=args.bt_grid_fee_rates,
+                bt_grid_slippage_bps=args.bt_grid_slippage_bps,
+                bt_grid_min_hold_days=args.bt_grid_min_hold_days,
+                bt_grid_signal_confirm_days=args.bt_grid_signal_confirm_days,
+                bt_grid_max_positions=args.bt_grid_max_positions,
+                bt_grid_sort_by=args.bt_grid_sort_by,
+                bt_grid_top=args.bt_grid_top,
+                bt_walk_forward=args.bt_walk_forward,
+                bt_wf_train_days=args.bt_wf_train_days,
+                bt_wf_test_days=args.bt_wf_test_days,
+                bt_wf_step_days=args.bt_wf_step_days,
+                bt_wf_sort_by=args.bt_wf_sort_by,
+                bt_save=args.bt_save,
+                bt_output_dir=args.bt_output_dir,
+                bt_compare_last=args.bt_compare_last,
+                risk_report=args.risk_report,
+                risk_output_dir=args.risk_output_dir,
+                risk_max_drawdown_limit=args.risk_max_drawdown_limit,
+                risk_max_single_weight=args.risk_max_single_weight,
+                risk_max_industry_weight=args.risk_max_industry_weight,
+                risk_min_holdings=args.risk_min_holdings,
             )
-            return 0
+            print(portfolio_text)
+            return 1 if _is_error_text(portfolio_text) else 0
         if args.portfolio_symbols and not args.backtest:
             print(format_error(ErrorCode.INPUT, "组合回测请同时传入 --backtest 参数。"))
             return 1
@@ -259,4 +272,4 @@ def main() -> int:
         if detail:
             print(f"详细原因: {format_error(ErrorCode.LLM_CALL, detail)}")
 
-    return 0
+    return 1 if _is_error_text(text) else 0

@@ -5,7 +5,7 @@ from app.config import CONFIG
 from app.errors import ErrorCode, format_error
 from app.logging_config import get_logger
 from app.utils import detect_network_restriction_hint, normalize_symbol
-from backtest.artifacts import export_backtest_record, export_grid_results
+from backtest.artifacts import export_backtest_record, export_grid_results, export_walk_forward_record
 from backtest.engine import (
     format_backtest_report,
     format_portfolio_backtest_report,
@@ -20,6 +20,7 @@ from backtest.grid_search import (
     run_portfolio_grid_backtest,
     run_single_grid_backtest,
 )
+from backtest.walk_forward import format_walk_forward_report, run_portfolio_walk_forward
 from data.providers.market_data import fetch_a_share_history, get_last_fetch_error
 from factors.indicators import add_indicators
 from llm.qwen_client import call_local_qwen, get_last_qwen_structured
@@ -340,6 +341,11 @@ def analyze_portfolio(
     bt_grid_max_positions: Optional[str] = None,
     bt_grid_sort_by: str = "annual_return",
     bt_grid_top: int = 10,
+    bt_walk_forward: bool = False,
+    bt_wf_train_days: int = 126,
+    bt_wf_test_days: int = 63,
+    bt_wf_step_days: int = 21,
+    bt_wf_sort_by: str = "annual_return",
     bt_save: bool = False,
     bt_output_dir: Optional[str] = None,
     bt_compare_last: bool = False,
@@ -392,6 +398,7 @@ def analyze_portfolio(
     best_params = {}
     grid_results: list[dict[str, object]] = []
     grid_total_count = 0
+    param_grid: list[dict[str, object]] = []
 
     if bt_grid:
         fee_rates = parse_float_list(bt_grid_fee_rates, bt_fee_rate)
@@ -492,6 +499,20 @@ def analyze_portfolio(
                 ),
             ]
         )
+
+    walk_forward_result = {}
+    if bt_walk_forward:
+        walk_forward_result = run_portfolio_walk_forward(
+            symbol_data=prepared,
+            base_params=best_params,
+            param_grid=param_grid if bt_grid else None,
+            train_days=bt_wf_train_days,
+            test_days=bt_wf_test_days,
+            step_days=bt_wf_step_days,
+            sort_by=bt_wf_sort_by,
+            industry_map=industry_map,
+        )
+        lines.extend(["", format_walk_forward_report(walk_forward_result)])
     if bt_save:
         params = best_params
         output_dir = bt_output_dir or CONFIG.backtest_output_dir
@@ -535,6 +556,27 @@ def analyze_portfolio(
             lines.append(f"- 对比基线: {export_result['baseline_path']}")
         if export_result.get("compare_text"):
             lines.append(str(export_result["compare_text"]))
+        if bt_walk_forward and walk_forward_result:
+            wf_export = export_walk_forward_record(
+                symbols=sorted(prepared.keys()),
+                start=start,
+                end=end,
+                config={
+                    "train_days": bt_wf_train_days,
+                    "test_days": bt_wf_test_days,
+                    "step_days": bt_wf_step_days,
+                    "sort_by": bt_wf_sort_by,
+                    "grid_enabled": bt_grid,
+                },
+                result=walk_forward_result,
+                output_dir=output_dir,
+            )
+            lines.extend(
+                [
+                    f"- Walk-forward JSON: {wf_export['json_path']}",
+                    f"- Walk-forward Markdown: {wf_export['md_path']}",
+                ]
+            )
     if risk_report:
         risk = evaluate_portfolio_risk(
             metrics=best_metrics,

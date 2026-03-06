@@ -353,3 +353,87 @@ def export_grid_results(
         "md_path": str(md_path),
         "csv_path": str(csv_path),
     }
+
+
+def export_walk_forward_record(
+    symbols: list[str],
+    start: str,
+    end: str,
+    config: dict[str, Any],
+    result: dict[str, Any],
+    output_dir: str,
+) -> dict[str, str]:
+    normalized_symbols = _normalize_symbols(symbols)
+    target_hash = _stable_hash(
+        {
+            "mode": "portfolio_walk_forward",
+            "symbols": normalized_symbols,
+            "period": {"start": start, "end": end},
+            "config": config,
+        }
+    )
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    prefix = f"wf_portfolio_{target_hash}_{stamp}"
+    out_dir = Path(output_dir).expanduser()
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    payload = {
+        "schema_version": 1,
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "mode": "portfolio_walk_forward",
+        "symbols": normalized_symbols,
+        "period": {"start": start, "end": end},
+        "config": dict(config or {}),
+        "windows_total": int((result or {}).get("windows_total", 0)),
+        "windows_valid": int((result or {}).get("windows_valid", 0)),
+        "summary": dict((result or {}).get("summary") or {}),
+        "windows": list((result or {}).get("windows") or []),
+    }
+
+    json_path = out_dir / f"{prefix}.json"
+    md_path = out_dir / f"{prefix}.md"
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2, sort_keys=True)
+
+    summary = payload.get("summary") or {}
+    md_lines = [
+        "# Walk-forward 记录（portfolio）",
+        "",
+        f"- 生成时间: {payload['generated_at']}",
+        f"- 标的: {', '.join(payload['symbols'])}",
+        f"- 区间: {start} ~ {end}",
+        f"- 训练/测试/步长: {int(config.get('train_days', 0))} / {int(config.get('test_days', 0))} / {int(config.get('step_days', 0))}",
+        f"- 排序字段: {config.get('sort_by', 'annual_return')}",
+        f"- 窗口数: {payload['windows_total']}（有效 {payload['windows_valid']}）",
+        "",
+        "## 汇总指标",
+        f"- 窗口胜率: {float(summary.get('window_win_rate', 0.0)) * 100:.2f}%",
+        f"- 平均总收益: {float(summary.get('avg_total_return', 0.0)) * 100:.2f}%",
+        f"- 平均年化收益: {float(summary.get('avg_annual_return', 0.0)) * 100:.2f}%",
+        f"- 平均夏普: {float(summary.get('avg_sharpe', 0.0)):.2f}",
+        f"- 最差回撤: {float(summary.get('worst_drawdown', 0.0)) * 100:.2f}%",
+        f"- 最佳窗口ID: {int(summary.get('best_window_id', 0))}",
+        f"- 最弱窗口ID: {int(summary.get('worst_window_id', 0))}",
+        "",
+        "## 窗口明细（前10）",
+        "",
+        "| 窗口 | 训练区间 | 测试区间 | 年化 | 总收益 | 回撤 | 夏普 |",
+        "| --- | --- | --- | ---: | ---: | ---: | ---: |",
+    ]
+    for row in (payload.get("windows") or [])[:10]:
+        metrics = row.get("metrics") or {}
+        md_lines.append(
+            "| "
+            + f"{int(row.get('window_id', 0))} | "
+            + f"{row.get('train_start', 'N/A')} ~ {row.get('train_end', 'N/A')} | "
+            + f"{row.get('test_start', 'N/A')} ~ {row.get('test_end', 'N/A')} | "
+            + f"{float(metrics.get('annual_return', 0.0)) * 100:.2f}% | "
+            + f"{float(metrics.get('total_return', 0.0)) * 100:.2f}% | "
+            + f"{float(metrics.get('max_drawdown', 0.0)) * 100:.2f}% | "
+            + f"{float(metrics.get('sharpe', 0.0)):.2f} |"
+        )
+
+    with open(md_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(md_lines))
+
+    return {"json_path": str(json_path), "md_path": str(md_path)}
