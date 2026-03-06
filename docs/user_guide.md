@@ -160,6 +160,27 @@ venv312/bin/python stock_analyzer.py \
 说明：
 - 该快照会聚合最新的 analysis/candidate/backtest/grid/walk-forward/risk 结果，供看板或外部系统直接消费。
 
+### 3.8 价值投资模式（M8 起步）
+
+单股价值研判（含价值理由、风险点、概率化预判、近期网络新闻摘要）：
+
+```bash
+venv312/bin/python stock_analyzer.py 600519 --value --value-news-limit 5
+```
+
+价值候选池扫描：
+
+```bash
+venv312/bin/python stock_analyzer.py --value-scan --universe hs300 --value-top 20
+```
+
+输出位置：
+- 价值候选池：`data/value_pools/`
+
+说明：
+- 若 `hs300/zz500` 成分股接口不可用，会自动回退到 `all` 并给出提示。
+- 价值模式默认输出风险声明，不构成投资建议。
+
 ## 4. OpenClaw 使用方式
 
 推荐在 OpenClaw TUI 中执行：

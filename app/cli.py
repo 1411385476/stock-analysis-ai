@@ -14,6 +14,7 @@ from data.repository.snapshot_store import (
 from llm.qwen_client import get_last_qwen_error, get_last_qwen_structured
 from llm.summarizer import evaluate_schema_completeness
 from report.standard_api import export_standard_snapshot
+from value.investing import analyze_value_stock, build_value_scores, export_value_pool, format_value_scan_report
 
 
 def _is_error_text(text: object) -> bool:
@@ -23,6 +24,11 @@ def _is_error_text(text: object) -> bool:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="股票行情分析器（单股分析 + A股全市场分批同步 + 条件筛选）")
     parser.add_argument("symbol", nargs="?", help="股票代码，例如 600519")
+    parser.add_argument("--value", action="store_true", help="输出单股价值投资研判报告（含理由与风险）")
+    parser.add_argument("--value-scan", action="store_true", help="执行价值投资候选池扫描")
+    parser.add_argument("--value-top", type=int, default=20, help="价值扫描输出Top N，默认20")
+    parser.add_argument("--value-news-limit", type=int, default=5, help="单股价值报告新闻条数，默认5")
+    parser.add_argument("--value-output-dir", help="价值候选池导出目录（默认 data/value_pools）")
     parser.add_argument("--portfolio-symbols", help="组合回测股票列表，逗号分隔，例如 600519,000001,300750")
     parser.add_argument("--start", help="开始日期 YYYY-MM-DD")
     parser.add_argument("--end", help="结束日期 YYYY-MM-DD")
@@ -119,6 +125,7 @@ def has_screen_request(args: argparse.Namespace) -> bool:
             args.min_market_cap is not None,
             args.max_market_cap is not None,
             args.scan,
+            args.value_scan,
             str(args.universe).strip().lower() not in {"", "all"},
         ]
     )
@@ -151,7 +158,7 @@ def main() -> int:
         if not screen_requested and not args.symbol:
             return 0
 
-    if screen_requested:
+    if screen_requested and not args.value_scan:
         screened_df = screen_ashare_snapshot(
             snapshot_file=args.snapshot_file,
             universe=args.universe,
@@ -178,6 +185,56 @@ def main() -> int:
             print("\n候选池文件已导出:")
             print(f"- CSV: {csv_path}")
             print(f"- Markdown: {md_path}")
+        if not args.symbol and not args.value_scan:
+            return 0
+
+    if args.value_scan:
+        value_base_df = screen_ashare_snapshot(
+            snapshot_file=args.snapshot_file,
+            universe=args.universe,
+            keyword=args.keyword,
+            min_price=args.min_price,
+            max_price=args.max_price,
+            min_pct_change=args.min_pct_change,
+            max_pct_change=args.max_pct_change,
+            min_turnover=args.min_turnover,
+            max_turnover=args.max_turnover,
+            min_market_cap=args.min_market_cap,
+            max_market_cap=args.max_market_cap,
+            sort_by=args.sort_by,
+            ascending=args.asc,
+            top_n=max(int(args.value_top) * 30, 500),
+        )
+        if value_base_df.empty and str(args.universe).strip().lower() not in {"", "all"}:
+            value_base_df = screen_ashare_snapshot(
+                snapshot_file=args.snapshot_file,
+                universe="all",
+                keyword=args.keyword,
+                min_price=args.min_price,
+                max_price=args.max_price,
+                min_pct_change=args.min_pct_change,
+                max_pct_change=args.max_pct_change,
+                min_turnover=args.min_turnover,
+                max_turnover=args.max_turnover,
+                min_market_cap=args.min_market_cap,
+                max_market_cap=args.max_market_cap,
+                sort_by=args.sort_by,
+                ascending=args.asc,
+                top_n=max(int(args.value_top) * 30, 500),
+            )
+            if not value_base_df.empty:
+                print("价值扫描提示: 指数成分加载失败，已自动回退到全市场(all)。")
+        value_df = build_value_scores(value_base_df).head(max(int(args.value_top), 1))
+        print(format_value_scan_report(value_df, args.snapshot_file))
+        value_csv, value_md = export_value_pool(
+            value_df,
+            universe=args.universe,
+            output_dir=args.value_output_dir,
+        )
+        if value_csv and value_md:
+            print("\n价值候选池文件已导出:")
+            print(f"- CSV: {value_csv}")
+            print(f"- Markdown: {value_md}")
         if not args.symbol:
             return 0
 
@@ -242,6 +299,16 @@ def main() -> int:
             )
         )
         return 1
+
+    if args.value:
+        value_text = analyze_value_stock(
+            symbol=args.symbol,
+            start=args.start,
+            end=args.end,
+            news_limit=args.value_news_limit,
+        )
+        print(value_text)
+        return 1 if _is_error_text(value_text) else 0
 
     text, chart, llm_result, bt_result, analysis_result, llm_stability_result = analyze_stock(
         symbol=args.symbol,
