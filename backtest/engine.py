@@ -173,6 +173,7 @@ def _build_metrics(
     rebalance_signal_exits: float = 0.0,
     rebalance_risk_exits: float = 0.0,
     rebalance_scale_events: float = 0.0,
+    risk_event_count: float = 0.0,
 ) -> Dict[str, float]:
     equity = (1.0 + strategy_ret).cumprod()
     benchmark_equity = (1.0 + benchmark_ret).cumprod()
@@ -252,6 +253,7 @@ def _build_metrics(
         "rebalance_signal_exits": float(rebalance_signal_exits),
         "rebalance_risk_exits": float(rebalance_risk_exits),
         "rebalance_scale_events": float(rebalance_scale_events),
+        "risk_event_count": float(risk_event_count),
         "rolling_drawdown_63": float(rolling_dd_63),
         "rolling_drawdown_126": float(rolling_dd_126),
         "rolling_drawdown_252": float(rolling_dd_252),
@@ -500,6 +502,7 @@ def run_portfolio_backtest(
     max_single_weight_used = 0.0
     exposure_scale_values: list[float] = []
     rebalance_log: list[dict[str, float | str]] = []
+    risk_event_log: list[dict[str, str]] = []
     industry_blocked_entries = 0
     capital_util_floor_breaches = 0
     capital_util_cap_hits = 0
@@ -541,6 +544,16 @@ def run_portfolio_backtest(
                     holdings.remove(s)
                     hold_days[s] = 0
                     exit_reasons[s] = "circuit_exit"
+                    risk_event_log.append(
+                        {
+                            "date": str(pd.Timestamp(ts).strftime("%Y-%m-%d")),
+                            "symbol": s,
+                            "trigger": "drawdown_circuit_active",
+                            "condition": f"cooldown_remaining={cooldown_remaining}",
+                            "action": "force_exit",
+                            "detail": "回撤熔断冷却期内强制平仓",
+                        }
+                    )
                 risk_exits += 1
             cooldown_remaining -= 1
             circuit_active_days += 1
@@ -576,6 +589,19 @@ def run_portfolio_backtest(
                 if risk_reason:
                     risk_exits += 1
                     exit_reasons[s] = risk_reason
+                    risk_event_log.append(
+                        {
+                            "date": str(pd.Timestamp(ts).strftime("%Y-%m-%d")),
+                            "symbol": s,
+                            "trigger": risk_reason,
+                            "condition": (
+                                f"entry={float(entry_price.get(s, exit_price)):.4f},exit={exit_price:.4f},"
+                                f"stop={stop_loss_pct:.4f},take={take_profit_pct:.4f}"
+                            ),
+                            "action": "risk_exit",
+                            "detail": "触发止损/止盈规则后平仓",
+                        }
+                    )
                 else:
                     exit_reasons[s] = "signal_exit"
 
@@ -595,6 +621,19 @@ def run_portfolio_backtest(
                                     same_industry_count += 1
                             if same_industry_count + 1 > max_per_industry:
                                 industry_blocked_entries += 1
+                                risk_event_log.append(
+                                    {
+                                        "date": str(pd.Timestamp(ts).strftime("%Y-%m-%d")),
+                                        "symbol": s,
+                                        "trigger": "industry_weight_limit",
+                                        "condition": (
+                                            f"industry={target_industry},current={same_industry_count},"
+                                            f"limit={max_per_industry}"
+                                        ),
+                                        "action": "skip_entry",
+                                        "detail": "行业集中度超限，拒绝开仓",
+                                    }
+                                )
                                 continue
                             holdings.add(s)
                             hold_days[s] = 1
@@ -628,6 +667,20 @@ def run_portfolio_backtest(
 
         if is_rebalance_day:
             current_position = {s: (weight_per_position * exposure_scale if s in holdings else 0.0) for s in symbols}
+            if max_single_weight < 1.0 and holdings and capital_slots > max_positions:
+                risk_event_log.append(
+                    {
+                        "date": str(pd.Timestamp(ts).strftime("%Y-%m-%d")),
+                        "symbol": "*",
+                        "trigger": "single_weight_limit",
+                        "condition": (
+                            f"max_single_weight={max_single_weight:.4f},"
+                            f"effective_single_weight={weight_per_position:.4f}"
+                        ),
+                        "action": "cap_position_weight",
+                        "detail": "单票权重上限生效，按上限重新分配仓位",
+                    }
+                )
         else:
             current_position = dict(prev_position)
             for s in symbols:
@@ -712,6 +765,16 @@ def run_portfolio_backtest(
         ):
             drawdown_circuit_triggers += 1
             cooldown_remaining = circuit_cooldown_days
+            risk_event_log.append(
+                {
+                    "date": str(pd.Timestamp(ts).strftime("%Y-%m-%d")),
+                    "symbol": "*",
+                    "trigger": "drawdown_circuit_trigger",
+                    "condition": f"drawdown={drawdown:.4f},threshold={-drawdown_circuit_pct:.4f}",
+                    "action": f"activate_cooldown_{circuit_cooldown_days}d",
+                    "detail": "组合回撤触发熔断，进入冷却期",
+                }
+            )
 
         prev_position = current_position
 
@@ -772,10 +835,12 @@ def run_portfolio_backtest(
         rebalance_signal_exits=float(rebalance_signal_exits),
         rebalance_risk_exits=float(rebalance_risk_exits),
         rebalance_scale_events=float(rebalance_scale_events),
+        risk_event_count=float(len(risk_event_log)),
     )
     metrics["rebalance_frequency"] = rebalance_frequency
     metrics["rebalance_weekday"] = float(rebalance_weekday)
     metrics["rebalance_log"] = rebalance_log
+    metrics["risk_event_log"] = risk_event_log
     return metrics
 
 
@@ -845,33 +910,46 @@ def format_portfolio_backtest_report(metrics: Dict[str, float]) -> str:
     else:
         rebalance_mode_text = "daily"
 
-    return "\n".join(
-        [
-            "组合回测结果:",
-            f"- 标的数量: {int(metrics.get('symbols', 0))}",
-            f"- 区间样本: {int(metrics['samples'])} 交易日",
-            f"- 策略总收益: {metrics['total_return'] * 100:.2f}%",
-            f"- 年化收益: {metrics['annual_return'] * 100:.2f}%",
-            f"- 基准收益(等权买入持有): {metrics['benchmark_return'] * 100:.2f}%",
-            f"- 最大回撤: {metrics['max_drawdown'] * 100:.2f}%",
-            f"- 滚动回撤(3M/6M/12M): {metrics.get('rolling_drawdown_63', 0.0) * 100:.2f}% / {metrics.get('rolling_drawdown_126', 0.0) * 100:.2f}% / {metrics.get('rolling_drawdown_252', 0.0) * 100:.2f}%",
-            f"- 夏普比率(年化): {metrics['sharpe']:.2f}",
-            f"- 卡玛比率(年化): {metrics.get('calmar', 0.0):.2f}",
-            f"- 年度分解: {yearly_text}",
-            f"- 胜率: {metrics['win_rate'] * 100:.2f}%",
-            f"- 开仓次数: {int(metrics['trades'])}",
-            f"- 平均持仓数: {metrics.get('avg_active_positions', 0.0):.2f}",
-            f"- 最大持仓数: {metrics.get('max_active_positions', 0.0):.0f} / 限制 {int(metrics.get('max_positions', 1))}",
-            f"- 资金利用率: 平均已投资资金={metrics.get('avg_capital_utilization', 0.0) * 100:.2f}%",
-            f"- 波动率控制: 目标={metrics.get('target_volatility', 0.0) * 100:.2f}% / 实现={metrics.get('realized_volatility', 0.0) * 100:.2f}% / lookback={int(metrics.get('vol_lookback_days', 20))}天 / 生效={int(metrics.get('vol_control_active_days', 0))}天",
-            f"- 资金利用率约束: 下限={metrics.get('min_capital_utilization_limit', 0.0) * 100:.2f}% / 上限={metrics.get('max_capital_utilization_limit', 1.0) * 100:.2f}% / 下限未达={int(metrics.get('capital_util_floor_breaches', 0))}天 / 上限触发={int(metrics.get('capital_util_cap_hits', 0))}天",
-            f"- 调仓模式: {rebalance_mode_text} / 调仓日数={int(metrics.get('rebalance_days', 0))} / 调仓事件={int(metrics.get('rebalance_event_count', 0))}",
-            f"- 调仓分解: 信号开仓={int(metrics.get('rebalance_signal_entries', 0))} / 信号平仓={int(metrics.get('rebalance_signal_exits', 0))} / 风控平仓={int(metrics.get('rebalance_risk_exits', 0))} / 仓位缩放={int(metrics.get('rebalance_scale_events', 0))}",
-            f"- 单票约束: 上限={metrics.get('max_single_weight_limit', 1.0) * 100:.2f}% / 实际峰值={metrics.get('max_single_weight_used', 0.0) * 100:.2f}%",
-            f"- 成本模型: 手续费={metrics.get('fee_rate', 0.0) * 100:.2f}% / 滑点={metrics.get('slippage_bps', 0.0):.1f}bps",
-            f"- 交易约束: 最小持仓={int(metrics.get('min_hold_days', 1))}天 / 信号确认={int(metrics.get('signal_confirm_days', 1))}天",
-            f"- 风控规则: 止损={metrics.get('stop_loss_pct', 0.0) * 100:.2f}% / 止盈={metrics.get('take_profit_pct', 0.0) * 100:.2f}% / 风控平仓={int(metrics.get('risk_exits', 0))}",
-            f"- 回撤熔断: 阈值={metrics.get('drawdown_circuit_pct', 0.0) * 100:.2f}% / 冷却={int(metrics.get('circuit_cooldown_days', 0))}天 / 触发={int(metrics.get('drawdown_circuit_triggers', 0))}",
-            f"- 行业约束: 上限={metrics.get('max_industry_weight_limit', 1.0) * 100:.2f}% / 实际峰值={metrics.get('max_industry_weight_used', 0.0) * 100:.2f}% / 拒绝开仓={int(metrics.get('industry_blocked_entries', 0))}",
-        ]
-    )
+    lines = [
+        "组合回测结果:",
+        f"- 标的数量: {int(metrics.get('symbols', 0))}",
+        f"- 区间样本: {int(metrics['samples'])} 交易日",
+        f"- 策略总收益: {metrics['total_return'] * 100:.2f}%",
+        f"- 年化收益: {metrics['annual_return'] * 100:.2f}%",
+        f"- 基准收益(等权买入持有): {metrics['benchmark_return'] * 100:.2f}%",
+        f"- 最大回撤: {metrics['max_drawdown'] * 100:.2f}%",
+        f"- 滚动回撤(3M/6M/12M): {metrics.get('rolling_drawdown_63', 0.0) * 100:.2f}% / {metrics.get('rolling_drawdown_126', 0.0) * 100:.2f}% / {metrics.get('rolling_drawdown_252', 0.0) * 100:.2f}%",
+        f"- 夏普比率(年化): {metrics['sharpe']:.2f}",
+        f"- 卡玛比率(年化): {metrics.get('calmar', 0.0):.2f}",
+        f"- 年度分解: {yearly_text}",
+        f"- 胜率: {metrics['win_rate'] * 100:.2f}%",
+        f"- 开仓次数: {int(metrics['trades'])}",
+        f"- 平均持仓数: {metrics.get('avg_active_positions', 0.0):.2f}",
+        f"- 最大持仓数: {metrics.get('max_active_positions', 0.0):.0f} / 限制 {int(metrics.get('max_positions', 1))}",
+        f"- 资金利用率: 平均已投资资金={metrics.get('avg_capital_utilization', 0.0) * 100:.2f}%",
+        f"- 波动率控制: 目标={metrics.get('target_volatility', 0.0) * 100:.2f}% / 实现={metrics.get('realized_volatility', 0.0) * 100:.2f}% / lookback={int(metrics.get('vol_lookback_days', 20))}天 / 生效={int(metrics.get('vol_control_active_days', 0))}天",
+        f"- 资金利用率约束: 下限={metrics.get('min_capital_utilization_limit', 0.0) * 100:.2f}% / 上限={metrics.get('max_capital_utilization_limit', 1.0) * 100:.2f}% / 下限未达={int(metrics.get('capital_util_floor_breaches', 0))}天 / 上限触发={int(metrics.get('capital_util_cap_hits', 0))}天",
+        f"- 调仓模式: {rebalance_mode_text} / 调仓日数={int(metrics.get('rebalance_days', 0))} / 调仓事件={int(metrics.get('rebalance_event_count', 0))}",
+        f"- 调仓分解: 信号开仓={int(metrics.get('rebalance_signal_entries', 0))} / 信号平仓={int(metrics.get('rebalance_signal_exits', 0))} / 风控平仓={int(metrics.get('rebalance_risk_exits', 0))} / 仓位缩放={int(metrics.get('rebalance_scale_events', 0))}",
+        f"- 单票约束: 上限={metrics.get('max_single_weight_limit', 1.0) * 100:.2f}% / 实际峰值={metrics.get('max_single_weight_used', 0.0) * 100:.2f}%",
+        f"- 成本模型: 手续费={metrics.get('fee_rate', 0.0) * 100:.2f}% / 滑点={metrics.get('slippage_bps', 0.0):.1f}bps",
+        f"- 交易约束: 最小持仓={int(metrics.get('min_hold_days', 1))}天 / 信号确认={int(metrics.get('signal_confirm_days', 1))}天",
+        f"- 风控规则: 止损={metrics.get('stop_loss_pct', 0.0) * 100:.2f}% / 止盈={metrics.get('take_profit_pct', 0.0) * 100:.2f}% / 风控平仓={int(metrics.get('risk_exits', 0))}",
+        f"- 回撤熔断: 阈值={metrics.get('drawdown_circuit_pct', 0.0) * 100:.2f}% / 冷却={int(metrics.get('circuit_cooldown_days', 0))}天 / 触发={int(metrics.get('drawdown_circuit_triggers', 0))}",
+        f"- 行业约束: 上限={metrics.get('max_industry_weight_limit', 1.0) * 100:.2f}% / 实际峰值={metrics.get('max_industry_weight_used', 0.0) * 100:.2f}% / 拒绝开仓={int(metrics.get('industry_blocked_entries', 0))}",
+        f"- 风控事件数: {int(metrics.get('risk_event_count', 0))}",
+    ]
+    risk_events = metrics.get("risk_event_log") if isinstance(metrics, dict) else None
+    if isinstance(risk_events, list) and risk_events:
+        lines.append("- 风控触发明细(前5):")
+        for event in risk_events[:5]:
+            lines.append(
+                "  - "
+                + (
+                    f"{event.get('date', 'N/A')} {event.get('symbol', '*')} | "
+                    f"{event.get('trigger', 'unknown')} | "
+                    f"条件={event.get('condition', '')} | "
+                    f"动作={event.get('action', '')}"
+                )
+            )
+    return "\n".join(lines)

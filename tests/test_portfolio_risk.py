@@ -79,6 +79,37 @@ class PortfolioRiskTestCase(unittest.TestCase):
         alert_codes = [str(item.get("code", "")) for item in report.get("alerts", [])]
         self.assertIn("single_weight", alert_codes)
 
+    def test_risk_summary_contains_event_trace(self) -> None:
+        report = evaluate_portfolio_risk(
+            metrics={
+                "max_positions": 2,
+                "max_drawdown": -0.10,
+                "sharpe": 0.8,
+                "win_rate": 0.45,
+                "risk_event_log": [
+                    {
+                        "date": "2026-03-06",
+                        "symbol": "600519",
+                        "trigger": "risk_stop_loss",
+                        "condition": "entry=1400,exit=1280,stop=0.08",
+                        "action": "risk_exit",
+                    }
+                ],
+            },
+            input_symbols=["600519", "000001"],
+            effective_symbols=["600519", "000001"],
+            failed_symbols=[],
+            period_start="2025-01-01",
+            period_end="2026-03-05",
+            max_drawdown_limit=0.15,
+            max_single_weight=0.6,
+            min_holdings=2,
+        )
+        self.assertEqual(int(report.get("risk_controls", {}).get("risk_event_count", 0)), 1)
+        summary = format_portfolio_risk_summary(report)
+        self.assertIn("风控事件数", summary)
+        self.assertIn("风控触发样例", summary)
+
 
 if __name__ == "__main__":
     unittest.main()

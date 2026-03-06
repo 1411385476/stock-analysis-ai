@@ -46,6 +46,22 @@ def evaluate_portfolio_risk(
     win_rate = float(metrics.get("win_rate", 0.0))
     circuit_triggers = int(float(metrics.get("drawdown_circuit_triggers", 0)))
     circuit_active_days = int(float(metrics.get("circuit_active_days", 0)))
+    risk_events_raw = metrics.get("risk_event_log") if isinstance(metrics, dict) else None
+    risk_events: list[dict[str, str]] = []
+    if isinstance(risk_events_raw, list):
+        for row in risk_events_raw:
+            if not isinstance(row, dict):
+                continue
+            risk_events.append(
+                {
+                    "date": str(row.get("date", "")),
+                    "symbol": str(row.get("symbol", "")),
+                    "trigger": str(row.get("trigger", "")),
+                    "condition": str(row.get("condition", "")),
+                    "action": str(row.get("action", "")),
+                    "detail": str(row.get("detail", "")),
+                }
+            )
 
     alerts: list[dict[str, str]] = []
     penalties = 0
@@ -163,7 +179,9 @@ def evaluate_portfolio_risk(
             "circuit_cooldown_days": int(float(metrics.get("circuit_cooldown_days", 0))),
             "drawdown_circuit_triggers": circuit_triggers,
             "circuit_active_days": circuit_active_days,
+            "risk_event_count": int(len(risk_events)),
         },
+        "risk_events": risk_events[:200],
         "alerts": alerts,
         "risk_score": score,
         "risk_level": risk_level,
@@ -187,6 +205,7 @@ def format_portfolio_risk_summary(report: dict[str, Any]) -> str:
         f"- 标的数/单票峰值权重: {report.get('exposure', {}).get('symbol_count', 0)} / {report.get('exposure', {}).get('max_single_weight_used', 0.0) * 100:.2f}%",
         f"- 行业峰值权重: {report.get('exposure', {}).get('max_industry_weight_used', 0.0) * 100:.2f}%",
         f"- 回撤阈值: -{report.get('thresholds', {}).get('max_drawdown_limit', 0.0) * 100:.2f}%",
+        f"- 风控事件数: {int(report.get('risk_controls', {}).get('risk_event_count', 0))}",
     ]
     alerts = report.get("alerts") or []
     if alerts:
@@ -195,6 +214,19 @@ def format_portfolio_risk_summary(report: dict[str, Any]) -> str:
             lines.append(f"  - [{item.get('severity', 'unknown')}] {item.get('message', '')}")
     else:
         lines.append("- 告警: 无")
+    events = report.get("risk_events") or []
+    if events:
+        lines.append("- 风控触发样例:")
+        for item in events[:3]:
+            lines.append(
+                "  - "
+                + (
+                    f"{item.get('date', 'N/A')} {item.get('symbol', '*')} | "
+                    f"{item.get('trigger', 'unknown')} | "
+                    f"条件={item.get('condition', '')} | "
+                    f"动作={item.get('action', '')}"
+                )
+            )
     return "\n".join(lines)
 
 
@@ -239,6 +271,7 @@ def export_portfolio_risk_report(report: dict[str, Any], output_dir: str) -> dic
         f"- 冷却天数: {int(report.get('risk_controls', {}).get('circuit_cooldown_days', 0))}",
         f"- 触发次数: {int(report.get('risk_controls', {}).get('drawdown_circuit_triggers', 0))}",
         f"- 熔断活跃天数: {int(report.get('risk_controls', {}).get('circuit_active_days', 0))}",
+        f"- 风控事件总数: {int(report.get('risk_controls', {}).get('risk_event_count', 0))}",
         "",
         "## 告警",
     ]
@@ -252,6 +285,23 @@ def export_portfolio_risk_report(report: dict[str, Any], output_dir: str) -> dic
     lines.extend(["", "## 建议"])
     for rec in report.get("recommendations") or []:
         lines.append(f"- {rec}")
+
+    events = report.get("risk_events") or []
+    lines.extend(["", "## 风控触发明细（前20）"])
+    if events:
+        lines.append("| 日期 | 标的 | 触发条件 | 约束说明 | 处理动作 |")
+        lines.append("| --- | --- | --- | --- | --- |")
+        for item in events[:20]:
+            lines.append(
+                "| "
+                + f"{item.get('date', '')} | "
+                + f"{item.get('symbol', '')} | "
+                + f"{item.get('trigger', '')} | "
+                + f"{item.get('condition', '')} | "
+                + f"{item.get('action', '')} |"
+            )
+    else:
+        lines.append("- 无")
 
     with open(md_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))

@@ -227,6 +227,13 @@ class BacktestTestCase(unittest.TestCase):
         self.assertGreater(with_circuit.get("drawdown_circuit_triggers", 0.0), 0.0)
         self.assertGreater(with_circuit.get("circuit_active_days", 0.0), 0.0)
         self.assertGreater(with_circuit["total_return"], no_circuit["total_return"])
+        self.assertGreater(with_circuit.get("risk_event_count", 0.0), 0.0)
+        trigger_set = {
+            str(item.get("trigger", ""))
+            for item in (with_circuit.get("risk_event_log") or [])
+            if isinstance(item, dict)
+        }
+        self.assertIn("drawdown_circuit_trigger", trigger_set)
 
     def test_portfolio_backtest_industry_limit_blocks_entries(self) -> None:
         idx = pd.date_range("2024-01-01", periods=90, freq="B")
@@ -264,6 +271,12 @@ class BacktestTestCase(unittest.TestCase):
         self.assertGreaterEqual(constrained.get("max_industry_weight_used", 0.0), 0.0)
         self.assertLessEqual(constrained.get("max_industry_weight_used", 0.0), 0.5)
         self.assertGreater(unconstrained.get("max_industry_weight_used", 0.0), 0.5)
+        trigger_set = {
+            str(item.get("trigger", ""))
+            for item in (constrained.get("risk_event_log") or [])
+            if isinstance(item, dict)
+        }
+        self.assertIn("industry_weight_limit", trigger_set)
 
     def test_portfolio_backtest_single_weight_cap(self) -> None:
         idx = pd.date_range("2024-01-01", periods=100, freq="B")
@@ -318,6 +331,7 @@ class BacktestTestCase(unittest.TestCase):
         self.assertIn("年度分解", text)
         self.assertIn("波动率控制", text)
         self.assertIn("资金利用率约束", text)
+        self.assertIn("风控事件数", text)
 
     def test_portfolio_backtest_target_volatility_controls_exposure(self) -> None:
         idx = pd.date_range("2024-01-01", periods=140, freq="B")
