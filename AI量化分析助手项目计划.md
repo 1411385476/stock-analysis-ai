@@ -8,7 +8,7 @@
 - M1（第1周）：已完成
 - M2（第2周）：已完成
 - M3（第3周）：已完成
-- M4（第4周）：未开始
+- M4（第4周）：已完成（已落地止损/止盈、风险日报、回撤熔断、行业集中度约束与单票权重上限）
 - M5（第5周）：未开始
 - M6（第6周）：未开始
 
@@ -142,6 +142,8 @@ openclaw-finance/
 
 - 能对组合触发风险规则并给出原因
 - 风险报告可导出 Markdown/JSON
+
+当前状态：已完成（已支持 `--bt-stop-loss-pct` / `--bt-take-profit-pct`、`--bt-drawdown-circuit-pct` / `--bt-circuit-cooldown-days`、`--bt-max-industry-weight` / `--industry-map-file` / `--industry-level`、`--bt-max-single-weight`，并提供 `--risk-report` 导出 Markdown/JSON 风险日报；实盘样例验证低风险等级并完成基线对比）
 
 ### M5（第5周）：AI 助手能力升级
 

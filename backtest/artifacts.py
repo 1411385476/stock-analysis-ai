@@ -96,6 +96,13 @@ def _render_metrics_markdown(metrics: dict[str, float]) -> list[str]:
     ]
     if "max_positions" in metrics:
         lines.append(f"- 最大持仓限制: {int(metrics.get('max_positions', 1))}")
+    if "max_single_weight_limit" in metrics:
+        lines.append(
+            f"- 单票约束: 上限={metrics.get('max_single_weight_limit', 1.0) * 100:.2f}% / "
+            f"实际峰值={metrics.get('max_single_weight_used', 0.0) * 100:.2f}%"
+        )
+    if "avg_capital_utilization" in metrics:
+        lines.append(f"- 平均资金利用率: {metrics.get('avg_capital_utilization', 0.0) * 100:.2f}%")
     return lines
 
 
@@ -284,7 +291,7 @@ def export_grid_results(
             + f"{float(metrics.get('total_return', 0.0)) * 100:.2f}% | "
             + f"{float(metrics.get('max_drawdown', 0.0)) * 100:.2f}% | "
             + f"{float(metrics.get('sharpe', 0.0)):.2f} | "
-            + f"fee={float(params.get('fee_rate', 0.0)):.4f}, slip={float(params.get('slippage_bps', 0.0)):.1f}bps, hold={int(params.get('min_hold_days', 1))}, confirm={int(params.get('signal_confirm_days', 1))}, max_pos={int(params.get('max_positions', 1))} |"
+            + f"fee={float(params.get('fee_rate', 0.0)):.4f}, slip={float(params.get('slippage_bps', 0.0)):.1f}bps, hold={int(params.get('min_hold_days', 1))}, confirm={int(params.get('signal_confirm_days', 1))}, max_pos={int(params.get('max_positions', 1))}, stop={float(params.get('stop_loss_pct', 0.0)) * 100:.2f}%, take={float(params.get('take_profit_pct', 0.0)) * 100:.2f}%, dd_circuit={float(params.get('drawdown_circuit_pct', 0.0)) * 100:.2f}%, cooldown={int(params.get('circuit_cooldown_days', 0))}d, industry_cap={float(params.get('max_industry_weight', 1.0)) * 100:.2f}%, single_cap={float(params.get('max_single_weight', 1.0)) * 100:.2f}% |"
         )
     with open(md_path, "w", encoding="utf-8") as f:
         f.write("\n".join(md_lines))
@@ -306,6 +313,12 @@ def export_grid_results(
                 "min_hold_days",
                 "signal_confirm_days",
                 "max_positions",
+                "stop_loss_pct",
+                "take_profit_pct",
+                "drawdown_circuit_pct",
+                "circuit_cooldown_days",
+                "max_industry_weight",
+                "max_single_weight",
             ]
         )
         for idx, row in enumerate(results, start=1):
@@ -326,6 +339,12 @@ def export_grid_results(
                     params.get("min_hold_days", 1),
                     params.get("signal_confirm_days", 1),
                     params.get("max_positions", 1),
+                    params.get("stop_loss_pct", 0.0),
+                    params.get("take_profit_pct", 0.0),
+                    params.get("drawdown_circuit_pct", 0.0),
+                    params.get("circuit_cooldown_days", 0),
+                    params.get("max_industry_weight", 1.0),
+                    params.get("max_single_weight", 1.0),
                 ]
             )
 

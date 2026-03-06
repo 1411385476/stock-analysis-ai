@@ -102,6 +102,8 @@ def run_single_grid_backtest(
             min_hold_days=int(params.get("min_hold_days", 1)),
             signal_confirm_days=int(params.get("signal_confirm_days", 1)),
             max_positions=int(params.get("max_positions", 1)),
+            stop_loss_pct=float(params.get("stop_loss_pct", 0.0)),
+            take_profit_pct=float(params.get("take_profit_pct", 0.0)),
         )
         if not metrics:
             continue
@@ -113,6 +115,7 @@ def run_portfolio_grid_backtest(
     symbol_data,
     param_grid: list[dict[str, Any]],
     sort_by: str = "annual_return",
+    industry_map: Optional[dict[str, str]] = None,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for params in param_grid:
@@ -123,6 +126,13 @@ def run_portfolio_grid_backtest(
             min_hold_days=int(params.get("min_hold_days", 1)),
             signal_confirm_days=int(params.get("signal_confirm_days", 1)),
             max_positions=int(params.get("max_positions", 1)),
+            stop_loss_pct=float(params.get("stop_loss_pct", 0.0)),
+            take_profit_pct=float(params.get("take_profit_pct", 0.0)),
+            industry_map=industry_map,
+            max_industry_weight=float(params.get("max_industry_weight", 1.0)),
+            max_single_weight=float(params.get("max_single_weight", 1.0)),
+            drawdown_circuit_pct=float(params.get("drawdown_circuit_pct", 0.0)),
+            circuit_cooldown_days=int(params.get("circuit_cooldown_days", 0)),
         )
         if not metrics:
             continue
@@ -131,13 +141,32 @@ def run_portfolio_grid_backtest(
 
 
 def _param_text(params: dict[str, Any]) -> str:
-    return (
+    parts = [
         f"fee={float(params.get('fee_rate', 0.0)):.4f}, "
         f"slip={float(params.get('slippage_bps', 0.0)):.1f}bps, "
         f"hold={int(params.get('min_hold_days', 1))}, "
         f"confirm={int(params.get('signal_confirm_days', 1))}, "
         f"max_pos={int(params.get('max_positions', 1))}"
-    )
+    ]
+    stop_loss_pct = float(params.get("stop_loss_pct", 0.0))
+    take_profit_pct = float(params.get("take_profit_pct", 0.0))
+    if stop_loss_pct > 0:
+        parts.append(f", stop={stop_loss_pct * 100:.2f}%")
+    if take_profit_pct > 0:
+        parts.append(f", take={take_profit_pct * 100:.2f}%")
+    drawdown_circuit_pct = float(params.get("drawdown_circuit_pct", 0.0))
+    if drawdown_circuit_pct > 0:
+        parts.append(f", dd_circuit={drawdown_circuit_pct * 100:.2f}%")
+    cooldown_days = int(params.get("circuit_cooldown_days", 0))
+    if cooldown_days > 0:
+        parts.append(f", cooldown={cooldown_days}d")
+    max_industry_weight = float(params.get("max_industry_weight", 1.0))
+    if max_industry_weight < 1.0:
+        parts.append(f", industry_cap={max_industry_weight * 100:.2f}%")
+    max_single_weight = float(params.get("max_single_weight", 1.0))
+    if max_single_weight < 1.0:
+        parts.append(f", single_cap={max_single_weight * 100:.2f}%")
+    return "".join(parts)
 
 
 def format_grid_report(

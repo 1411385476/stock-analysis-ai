@@ -26,6 +26,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bt-min-hold-days", type=int, default=1, help="回测最小持仓天数，默认1")
     parser.add_argument("--bt-signal-confirm-days", type=int, default=1, help="回测信号确认天数，默认1")
     parser.add_argument("--bt-max-positions", type=int, default=1, help="回测最大持仓数（组合模式生效）")
+    parser.add_argument("--bt-stop-loss-pct", type=float, default=0.0, help="回测止损比例(0-1)，默认0(禁用)")
+    parser.add_argument("--bt-take-profit-pct", type=float, default=0.0, help="回测止盈比例(0-1)，默认0(禁用)")
+    parser.add_argument("--bt-drawdown-circuit-pct", type=float, default=0.0, help="回测回撤熔断阈值(0-1)，默认0(禁用)")
+    parser.add_argument("--bt-circuit-cooldown-days", type=int, default=0, help="回撤熔断冷却天数，默认0")
+    parser.add_argument("--bt-max-industry-weight", type=float, default=1.0, help="行业权重上限(0-1)，默认1.0")
+    parser.add_argument("--bt-max-single-weight", type=float, default=1.0, help="单票权重上限(0-1)，默认1.0")
+    parser.add_argument("--industry-map-file", help="行业映射CSV（含 symbol/code 与 industry/行业 列）")
+    parser.add_argument("--industry-level", choices=["auto", "l1", "l2"], default="auto", help="行业层级: auto/l1/l2，默认 auto")
     parser.add_argument("--bt-grid", action="store_true", help="启用参数网格回测")
     parser.add_argument("--bt-grid-fee-rates", help="网格手续费率列表，逗号分隔，例如 0.0005,0.001")
     parser.add_argument("--bt-grid-slippage-bps", help="网格滑点列表(bps)，逗号分隔，例如 0,8,12")
@@ -37,6 +45,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bt-save", action="store_true", help="导出回测结果到 JSON/Markdown 文件")
     parser.add_argument("--bt-output-dir", help="回测结果导出目录（默认 data/backtests）")
     parser.add_argument("--bt-compare-last", action="store_true", help="导出回测时自动对比同目标最近一次记录")
+    parser.add_argument("--risk-report", action="store_true", help="输出并导出组合风险报告（Markdown/JSON）")
+    parser.add_argument("--risk-output-dir", help="风险报告导出目录（默认 data/risk_reports）")
+    parser.add_argument("--risk-max-drawdown-limit", type=float, default=0.15, help="风险阈值：最大回撤上限(正数)，默认0.15")
+    parser.add_argument("--risk-max-single-weight", type=float, default=0.35, help="风险阈值：单票权重上限，默认0.35")
+    parser.add_argument("--risk-max-industry-weight", type=float, default=0.6, help="风险阈值：行业权重上限，默认0.6")
+    parser.add_argument("--risk-min-holdings", type=int, default=3, help="风险阈值：最少持仓标的数，默认3")
     parser.add_argument("--sync-a-share", action="store_true", help="分批拉取A股全市场快照并落盘")
     parser.add_argument("--scan", action="store_true", help="执行候选池扫描（可与 --universe 配合）")
     parser.add_argument("--batch-size", type=int, default=300, help="快照分批文件大小，默认300")
@@ -137,6 +151,14 @@ def main() -> int:
                     bt_min_hold_days=args.bt_min_hold_days,
                     bt_signal_confirm_days=args.bt_signal_confirm_days,
                     bt_max_positions=args.bt_max_positions,
+                    bt_stop_loss_pct=args.bt_stop_loss_pct,
+                    bt_take_profit_pct=args.bt_take_profit_pct,
+                    bt_drawdown_circuit_pct=args.bt_drawdown_circuit_pct,
+                    bt_circuit_cooldown_days=args.bt_circuit_cooldown_days,
+                    bt_max_industry_weight=args.bt_max_industry_weight,
+                    bt_max_single_weight=args.bt_max_single_weight,
+                    industry_map_file=args.industry_map_file,
+                    industry_level=args.industry_level,
                     bt_grid=args.bt_grid,
                     bt_grid_fee_rates=args.bt_grid_fee_rates,
                     bt_grid_slippage_bps=args.bt_grid_slippage_bps,
@@ -148,6 +170,12 @@ def main() -> int:
                     bt_save=args.bt_save,
                     bt_output_dir=args.bt_output_dir,
                     bt_compare_last=args.bt_compare_last,
+                    risk_report=args.risk_report,
+                    risk_output_dir=args.risk_output_dir,
+                    risk_max_drawdown_limit=args.risk_max_drawdown_limit,
+                    risk_max_single_weight=args.risk_max_single_weight,
+                    risk_max_industry_weight=args.risk_max_industry_weight,
+                    risk_min_holdings=args.risk_min_holdings,
                 )
             )
             return 0
@@ -173,6 +201,10 @@ def main() -> int:
         bt_min_hold_days=args.bt_min_hold_days,
         bt_signal_confirm_days=args.bt_signal_confirm_days,
         bt_max_positions=args.bt_max_positions,
+        bt_stop_loss_pct=args.bt_stop_loss_pct,
+        bt_take_profit_pct=args.bt_take_profit_pct,
+        bt_drawdown_circuit_pct=args.bt_drawdown_circuit_pct,
+        bt_circuit_cooldown_days=args.bt_circuit_cooldown_days,
         bt_grid=args.bt_grid,
         bt_grid_fee_rates=args.bt_grid_fee_rates,
         bt_grid_slippage_bps=args.bt_grid_slippage_bps,

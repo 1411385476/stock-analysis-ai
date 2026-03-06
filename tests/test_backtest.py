@@ -176,6 +176,119 @@ class BacktestTestCase(unittest.TestCase):
         self.assertGreater(base["trades"], 0)
         self.assertGreater(base["total_return"], costly["total_return"])
 
+    def test_portfolio_backtest_stop_loss_triggers_risk_exits(self) -> None:
+        idx = pd.date_range("2024-01-01", periods=90, freq="B")
+
+        def _mk_downtrend() -> pd.DataFrame:
+            return pd.DataFrame(
+                {
+                    "Close": np.linspace(100.0, 70.0, len(idx)),
+                    "MA20": np.full(len(idx), 2.0),
+                    "MA60": np.full(len(idx), 1.0),
+                    "MACD": np.full(len(idx), 1.0),
+                    "MACD_SIGNAL": np.zeros(len(idx)),
+                    "RSI14": np.full(len(idx), 50.0),
+                },
+                index=idx,
+            )
+
+        symbol_data = {"AAA": _mk_downtrend()}
+        no_risk = run_portfolio_backtest(symbol_data, fee_rate=0.0, max_positions=1, stop_loss_pct=0.0)
+        with_stop = run_portfolio_backtest(symbol_data, fee_rate=0.0, max_positions=1, stop_loss_pct=0.05)
+        self.assertEqual(no_risk.get("risk_exits", 0.0), 0.0)
+        self.assertGreater(with_stop.get("risk_exits", 0.0), 0.0)
+
+    def test_portfolio_backtest_drawdown_circuit_triggers(self) -> None:
+        idx = pd.date_range("2024-01-01", periods=120, freq="B")
+
+        def _mk_sharp_drawdown() -> pd.DataFrame:
+            close = np.concatenate([np.linspace(100.0, 120.0, 40), np.linspace(120.0, 70.0, 80)])
+            return pd.DataFrame(
+                {
+                    "Close": close,
+                    "MA20": np.full(len(idx), 2.0),
+                    "MA60": np.full(len(idx), 1.0),
+                    "MACD": np.full(len(idx), 1.0),
+                    "MACD_SIGNAL": np.zeros(len(idx)),
+                    "RSI14": np.full(len(idx), 50.0),
+                },
+                index=idx,
+            )
+
+        symbol_data = {"AAA": _mk_sharp_drawdown()}
+        no_circuit = run_portfolio_backtest(symbol_data, fee_rate=0.0, max_positions=1)
+        with_circuit = run_portfolio_backtest(
+            symbol_data,
+            fee_rate=0.0,
+            max_positions=1,
+            drawdown_circuit_pct=0.08,
+            circuit_cooldown_days=5,
+        )
+        self.assertGreater(with_circuit.get("drawdown_circuit_triggers", 0.0), 0.0)
+        self.assertGreater(with_circuit.get("circuit_active_days", 0.0), 0.0)
+        self.assertGreater(with_circuit["total_return"], no_circuit["total_return"])
+
+    def test_portfolio_backtest_industry_limit_blocks_entries(self) -> None:
+        idx = pd.date_range("2024-01-01", periods=90, freq="B")
+
+        def _mk_symbol() -> pd.DataFrame:
+            return pd.DataFrame(
+                {
+                    "Close": np.linspace(100.0, 130.0, len(idx)),
+                    "MA20": np.full(len(idx), 2.0),
+                    "MA60": np.full(len(idx), 1.0),
+                    "MACD": np.full(len(idx), 1.0),
+                    "MACD_SIGNAL": np.zeros(len(idx)),
+                    "RSI14": np.full(len(idx), 50.0),
+                },
+                index=idx,
+            )
+
+        symbol_data = {"AAA": _mk_symbol(), "BBB": _mk_symbol(), "CCC": _mk_symbol()}
+        industry_map = {"AAA": "A", "BBB": "A", "CCC": "A"}
+        unconstrained = run_portfolio_backtest(
+            symbol_data,
+            fee_rate=0.0,
+            max_positions=2,
+            max_industry_weight=1.0,
+            industry_map=industry_map,
+        )
+        constrained = run_portfolio_backtest(
+            symbol_data,
+            fee_rate=0.0,
+            max_positions=2,
+            max_industry_weight=0.5,
+            industry_map=industry_map,
+        )
+        self.assertGreater(constrained.get("industry_blocked_entries", 0.0), 0.0)
+        self.assertGreaterEqual(constrained.get("max_industry_weight_used", 0.0), 0.0)
+        self.assertLessEqual(constrained.get("max_industry_weight_used", 0.0), 0.5)
+        self.assertGreater(unconstrained.get("max_industry_weight_used", 0.0), 0.5)
+
+    def test_portfolio_backtest_single_weight_cap(self) -> None:
+        idx = pd.date_range("2024-01-01", periods=100, freq="B")
+
+        def _mk_symbol(offset: float) -> pd.DataFrame:
+            return pd.DataFrame(
+                {
+                    "Close": np.linspace(100.0, 140.0 + offset, len(idx)),
+                    "MA20": np.full(len(idx), 2.0 + offset),
+                    "MA60": np.full(len(idx), 1.0),
+                    "MACD": np.full(len(idx), 1.0 + offset),
+                    "MACD_SIGNAL": np.zeros(len(idx)),
+                    "RSI14": np.full(len(idx), 50.0),
+                },
+                index=idx,
+            )
+
+        symbol_data = {"AAA": _mk_symbol(0.1), "BBB": _mk_symbol(0.2)}
+        uncapped = run_portfolio_backtest(symbol_data, fee_rate=0.0, max_positions=1, max_single_weight=1.0)
+        capped = run_portfolio_backtest(symbol_data, fee_rate=0.0, max_positions=1, max_single_weight=0.35)
+
+        self.assertGreaterEqual(capped.get("max_single_weight_used", 0.0), 0.0)
+        self.assertLessEqual(capped.get("max_single_weight_used", 0.0), 0.35 + 1e-9)
+        self.assertLess(capped.get("avg_capital_utilization", 1.0), uncapped.get("avg_capital_utilization", 0.0))
+
     def test_format_portfolio_backtest_report_empty_metrics(self) -> None:
         self.assertEqual(
             format_portfolio_backtest_report({}),

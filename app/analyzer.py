@@ -23,6 +23,12 @@ from backtest.grid_search import (
 from data.providers.market_data import fetch_a_share_history, get_last_fetch_error
 from factors.indicators import add_indicators
 from llm.qwen_client import call_local_qwen
+from portfolio.industry import load_industry_map
+from portfolio.risk import (
+    evaluate_portfolio_risk,
+    export_portfolio_risk_report,
+    format_portfolio_risk_summary,
+)
 from report.charting import generate_chart
 from report.renderer import build_report
 from strategy.signal_engine import strategy_signals
@@ -41,6 +47,10 @@ def analyze_stock(
     bt_min_hold_days: int = 1,
     bt_signal_confirm_days: int = 1,
     bt_max_positions: int = 1,
+    bt_stop_loss_pct: float = 0.0,
+    bt_take_profit_pct: float = 0.0,
+    bt_drawdown_circuit_pct: float = 0.0,
+    bt_circuit_cooldown_days: int = 0,
     bt_grid: bool = False,
     bt_grid_fee_rates: Optional[str] = None,
     bt_grid_slippage_bps: Optional[str] = None,
@@ -115,6 +125,9 @@ def analyze_stock(
                 signal_confirm_days=signal_confirm_days,
                 max_positions=max_positions,
             )
+            for params in param_grid:
+                params["stop_loss_pct"] = max(float(bt_stop_loss_pct), 0.0)
+                params["take_profit_pct"] = max(float(bt_take_profit_pct), 0.0)
             grid_results = run_single_grid_backtest(df=df, param_grid=param_grid, sort_by=bt_grid_sort_by)
             if not grid_results:
                 backtest_text = "参数网格回测结果: 无有效结果。"
@@ -132,6 +145,8 @@ def analyze_stock(
                     f"- 最小持仓天数: {int(best_params.get('min_hold_days', 1))}",
                     f"- 信号确认天数: {int(best_params.get('signal_confirm_days', 1))}",
                     f"- 最大持仓数: {int(best_params.get('max_positions', 1))}",
+                    f"- 止损比例: {float(best_params.get('stop_loss_pct', 0.0)) * 100:.2f}%",
+                    f"- 止盈比例: {float(best_params.get('take_profit_pct', 0.0)) * 100:.2f}%",
                     "",
                     format_grid_report(
                         results=grid_results,
@@ -190,6 +205,8 @@ def analyze_stock(
                 min_hold_days=bt_min_hold_days,
                 signal_confirm_days=bt_signal_confirm_days,
                 max_positions=bt_max_positions,
+                stop_loss_pct=bt_stop_loss_pct,
+                take_profit_pct=bt_take_profit_pct,
             )
             backtest_text = format_backtest_report(metrics)
             if bt_save and metrics:
@@ -199,6 +216,8 @@ def analyze_stock(
                     "min_hold_days": bt_min_hold_days,
                     "signal_confirm_days": bt_signal_confirm_days,
                     "max_positions": bt_max_positions,
+                    "stop_loss_pct": bt_stop_loss_pct,
+                    "take_profit_pct": bt_take_profit_pct,
                 }
                 export_result = export_backtest_record(
                     mode="single",
@@ -239,6 +258,14 @@ def analyze_portfolio(
     bt_min_hold_days: int = 1,
     bt_signal_confirm_days: int = 1,
     bt_max_positions: int = 5,
+    bt_stop_loss_pct: float = 0.0,
+    bt_take_profit_pct: float = 0.0,
+    bt_drawdown_circuit_pct: float = 0.0,
+    bt_circuit_cooldown_days: int = 0,
+    bt_max_industry_weight: float = 1.0,
+    bt_max_single_weight: float = 1.0,
+    industry_map_file: Optional[str] = None,
+    industry_level: str = "auto",
     bt_grid: bool = False,
     bt_grid_fee_rates: Optional[str] = None,
     bt_grid_slippage_bps: Optional[str] = None,
@@ -250,10 +277,27 @@ def analyze_portfolio(
     bt_save: bool = False,
     bt_output_dir: Optional[str] = None,
     bt_compare_last: bool = False,
+    risk_report: bool = False,
+    risk_output_dir: Optional[str] = None,
+    risk_max_drawdown_limit: float = 0.15,
+    risk_max_single_weight: float = 0.35,
+    risk_max_industry_weight: float = 0.6,
+    risk_min_holdings: int = 3,
 ) -> str:
     normalized_symbols = [normalize_symbol(s) for s in symbols if str(s).strip()]
     if not normalized_symbols:
         return format_error(ErrorCode.INPUT, "组合回测需要至少一个有效股票代码。")
+    industry_map: dict[str, str] = {}
+    if industry_map_file:
+        try:
+            industry_map = load_industry_map(industry_map_file, level=industry_level)
+        except FileNotFoundError:
+            return format_error(
+                ErrorCode.INPUT,
+                f"行业映射文件不存在: {industry_map_file}。可先移除 --industry-map-file 参数，或创建 CSV（示例列: symbol,industry）。",
+            )
+        except Exception as exc:
+            return format_error(ErrorCode.INPUT, f"行业映射文件读取失败: {type(exc).__name__}: {exc}")
 
     if end is None:
         end = datetime.now().strftime("%Y-%m-%d")
@@ -300,11 +344,19 @@ def analyze_portfolio(
             signal_confirm_days=signal_confirm_days,
             max_positions=max_positions,
         )
+        for params in param_grid:
+            params["stop_loss_pct"] = max(float(bt_stop_loss_pct), 0.0)
+            params["take_profit_pct"] = max(float(bt_take_profit_pct), 0.0)
+            params["drawdown_circuit_pct"] = max(float(bt_drawdown_circuit_pct), 0.0)
+            params["circuit_cooldown_days"] = max(int(bt_circuit_cooldown_days), 0)
+            params["max_industry_weight"] = min(max(float(bt_max_industry_weight), 0.0), 1.0)
+            params["max_single_weight"] = min(max(float(bt_max_single_weight), 0.0), 1.0)
         grid_total_count = len(param_grid)
         grid_results = run_portfolio_grid_backtest(
             symbol_data=prepared,
             param_grid=param_grid,
             sort_by=bt_grid_sort_by,
+            industry_map=industry_map,
         )
         if not grid_results:
             return "参数网格回测结果: 无有效结果。"
@@ -318,6 +370,13 @@ def analyze_portfolio(
             min_hold_days=bt_min_hold_days,
             signal_confirm_days=bt_signal_confirm_days,
             max_positions=bt_max_positions,
+            stop_loss_pct=bt_stop_loss_pct,
+            take_profit_pct=bt_take_profit_pct,
+            industry_map=industry_map,
+            max_industry_weight=bt_max_industry_weight,
+            max_single_weight=bt_max_single_weight,
+            drawdown_circuit_pct=bt_drawdown_circuit_pct,
+            circuit_cooldown_days=bt_circuit_cooldown_days,
         )
         if not metrics:
             return "组合回测结果: 数据不足或指标缺失，无法回测。"
@@ -328,6 +387,12 @@ def analyze_portfolio(
             "min_hold_days": bt_min_hold_days,
             "signal_confirm_days": bt_signal_confirm_days,
             "max_positions": bt_max_positions,
+            "stop_loss_pct": bt_stop_loss_pct,
+            "take_profit_pct": bt_take_profit_pct,
+            "drawdown_circuit_pct": bt_drawdown_circuit_pct,
+            "circuit_cooldown_days": bt_circuit_cooldown_days,
+            "max_industry_weight": bt_max_industry_weight,
+            "max_single_weight": bt_max_single_weight,
         }
 
     lines = [
@@ -346,6 +411,12 @@ def analyze_portfolio(
                 f"- 最小持仓天数: {int(best_params.get('min_hold_days', 1))}",
                 f"- 信号确认天数: {int(best_params.get('signal_confirm_days', 1))}",
                 f"- 最大持仓数: {int(best_params.get('max_positions', 1))}",
+                f"- 止损比例: {float(best_params.get('stop_loss_pct', 0.0)) * 100:.2f}%",
+                f"- 止盈比例: {float(best_params.get('take_profit_pct', 0.0)) * 100:.2f}%",
+                f"- 回撤熔断阈值: {float(best_params.get('drawdown_circuit_pct', 0.0)) * 100:.2f}%",
+                f"- 熔断冷却天数: {int(best_params.get('circuit_cooldown_days', 0))}",
+                f"- 行业权重上限: {float(best_params.get('max_industry_weight', 1.0)) * 100:.2f}%",
+                f"- 单票权重上限: {float(best_params.get('max_single_weight', 1.0)) * 100:.2f}%",
                 "",
                 format_grid_report(
                     results=grid_results,
@@ -398,6 +469,28 @@ def analyze_portfolio(
             lines.append(f"- 对比基线: {export_result['baseline_path']}")
         if export_result.get("compare_text"):
             lines.append(str(export_result["compare_text"]))
+    if risk_report:
+        risk = evaluate_portfolio_risk(
+            metrics=best_metrics,
+            input_symbols=normalized_symbols,
+            effective_symbols=sorted(prepared.keys()),
+            failed_symbols=failed,
+            period_start=start,
+            period_end=end,
+            max_drawdown_limit=risk_max_drawdown_limit,
+            max_single_weight=risk_max_single_weight,
+            max_industry_weight=risk_max_industry_weight,
+            min_holdings=risk_min_holdings,
+        )
+        lines.extend(["", format_portfolio_risk_summary(risk)])
+        risk_export = export_portfolio_risk_report(risk, risk_output_dir or CONFIG.risk_report_output_dir)
+        lines.extend(
+            [
+                "风险报告已导出:",
+                f"- JSON: {risk_export['json_path']}",
+                f"- Markdown: {risk_export['md_path']}",
+            ]
+        )
     if failed:
         lines.append(f"未纳入标的: {'; '.join(failed)}")
     return "\n".join(lines)
