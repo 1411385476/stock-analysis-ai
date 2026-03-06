@@ -60,10 +60,13 @@ class WalkForwardTestCase(unittest.TestCase):
         self.assertGreater(result.get("windows_valid", 0), 0)
         summary = result.get("summary") or {}
         self.assertIn("avg_annual_return", summary)
+        segment = result.get("segment_comparison") or {}
+        self.assertIn("outperform_rate", segment)
 
         text = format_walk_forward_report(result)
         self.assertIn("Walk-forward评估", text)
         self.assertIn("窗口数量", text)
+        self.assertIn("分段对比", text)
 
     def test_walk_forward_insufficient_samples_message(self) -> None:
         short_symbol_data = {

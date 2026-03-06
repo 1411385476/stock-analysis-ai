@@ -1,4 +1,5 @@
 from itertools import product
+from math import ceil
 from typing import Any, Callable, Optional
 
 from backtest.engine import run_backtest, run_portfolio_backtest
@@ -193,5 +194,173 @@ def format_grid_report(
                 f"夏普={float(metrics.get('sharpe', 0.0)):.2f} | "
                 f"{_param_text(params)}"
             )
+        )
+    return "\n".join(lines)
+
+
+_PARAM_LABELS = {
+    "fee_rate": "手续费率",
+    "slippage_bps": "滑点",
+    "min_hold_days": "最小持仓天数",
+    "signal_confirm_days": "信号确认天数",
+    "max_positions": "最大持仓数",
+    "stop_loss_pct": "止损比例",
+    "take_profit_pct": "止盈比例",
+    "drawdown_circuit_pct": "回撤熔断阈值",
+    "circuit_cooldown_days": "熔断冷却天数",
+    "max_industry_weight": "行业权重上限",
+    "max_single_weight": "单票权重上限",
+}
+
+_PARAM_ORDER = [
+    "fee_rate",
+    "slippage_bps",
+    "min_hold_days",
+    "signal_confirm_days",
+    "max_positions",
+    "stop_loss_pct",
+    "take_profit_pct",
+    "drawdown_circuit_pct",
+    "circuit_cooldown_days",
+    "max_industry_weight",
+    "max_single_weight",
+]
+
+
+def _safe_float(value: Any) -> Optional[float]:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _format_param_value(key: str, value: float) -> str:
+    int_keys = {"min_hold_days", "signal_confirm_days", "max_positions", "circuit_cooldown_days"}
+    pct_keys = {
+        "fee_rate",
+        "stop_loss_pct",
+        "take_profit_pct",
+        "drawdown_circuit_pct",
+        "max_industry_weight",
+        "max_single_weight",
+    }
+    if key in int_keys:
+        return f"{int(round(value))}"
+    if key == "slippage_bps":
+        return f"{value:.1f}bps"
+    if key in pct_keys:
+        return f"{value * 100:.2f}%"
+    return f"{value:.4f}"
+
+
+def _format_metric_value(metric: str, value: float) -> str:
+    pct_metrics = {"annual_return", "total_return", "benchmark_return", "max_drawdown", "win_rate"}
+    if metric in pct_metrics:
+        return f"{value * 100:.2f}%"
+    return f"{value:.4f}"
+
+
+def summarize_grid_robust_ranges(
+    results: list[dict[str, Any]],
+    sort_by: str = "annual_return",
+    top_ratio: float = 0.2,
+    min_top_n: int = 10,
+) -> dict[str, Any]:
+    if not results:
+        return {}
+
+    ranked = sort_grid_results(list(results), sort_by=sort_by)
+    total = len(ranked)
+    ratio = min(max(float(top_ratio), 0.01), 1.0)
+    top_n = max(int(min_top_n), int(ceil(total * ratio)))
+    top_n = min(top_n, total)
+    selected = ranked[:top_n]
+    threshold = float((selected[-1].get("metrics") or {}).get(sort_by, 0.0))
+
+    key_sequence: list[str] = []
+    seen_keys: set[str] = set()
+    for key in _PARAM_ORDER:
+        key_sequence.append(key)
+        seen_keys.add(key)
+    for row in selected:
+        for key in (row.get("params") or {}).keys():
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            key_sequence.append(key)
+
+    stats: list[dict[str, Any]] = []
+    for key in key_sequence:
+        values: list[float] = []
+        for row in selected:
+            params = row.get("params") or {}
+            value = _safe_float(params.get(key))
+            if value is None:
+                continue
+            values.append(value)
+        if not values:
+            continue
+
+        freq: dict[float, int] = {}
+        for value in values:
+            freq[value] = freq.get(value, 0) + 1
+        mode_value, mode_count = max(freq.items(), key=lambda item: (item[1], -item[0]))
+        stats.append(
+            {
+                "key": key,
+                "label": _PARAM_LABELS.get(key, key),
+                "min": float(min(values)),
+                "max": float(max(values)),
+                "mode": float(mode_value),
+                "mode_coverage": float(mode_count / len(values)),
+                "unique_count": int(len(freq)),
+            }
+        )
+
+    return {
+        "sort_by": str(sort_by),
+        "top_ratio": float(ratio),
+        "total_count": int(total),
+        "selected_count": int(top_n),
+        "threshold": float(threshold),
+        "param_stats": stats,
+    }
+
+
+def format_robust_range_report(summary: dict[str, Any]) -> str:
+    if not summary:
+        return "参数稳健区间报告: 数据不足。"
+
+    sort_by = str(summary.get("sort_by", "annual_return"))
+    total = int(summary.get("total_count", 0))
+    selected = int(summary.get("selected_count", 0))
+    ratio = float(summary.get("top_ratio", 0.0))
+    threshold = float(summary.get("threshold", 0.0))
+    stats = list(summary.get("param_stats") or [])
+
+    lines = [
+        "参数稳健区间报告:",
+        f"- 取样范围: Top {ratio * 100:.1f}% => {selected}/{total}（按 {sort_by}）",
+        f"- 入选门槛: {sort_by} >= {_format_metric_value(sort_by, threshold)}",
+    ]
+    if not stats:
+        lines.append("- 参数统计: N/A")
+        return "\n".join(lines)
+
+    lines.append("- 参数区间与众数:")
+    for item in stats:
+        key = str(item.get("key", ""))
+        min_v = float(item.get("min", 0.0))
+        max_v = float(item.get("max", 0.0))
+        mode_v = float(item.get("mode", 0.0))
+        if abs(max_v - min_v) < 1e-12:
+            interval = _format_param_value(key, min_v)
+        else:
+            interval = f"{_format_param_value(key, min_v)} ~ {_format_param_value(key, max_v)}"
+        lines.append(
+            f"  - {item.get('label', key)}: 区间={interval} | 众数={_format_param_value(key, mode_v)} "
+            f"(覆盖={float(item.get('mode_coverage', 0.0)) * 100:.1f}%, 去重={int(item.get('unique_count', 0))})"
         )
     return "\n".join(lines)

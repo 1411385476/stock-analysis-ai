@@ -3,7 +3,7 @@ import os
 import tempfile
 import unittest
 
-from backtest.artifacts import export_backtest_record
+from backtest.artifacts import export_backtest_record, export_walk_forward_record
 
 
 def _sample_params() -> dict[str, float]:
@@ -94,6 +94,63 @@ class BacktestArtifactsTestCase(unittest.TestCase):
             self.assertTrue(os.path.exists(str(second["baseline_path"])))
             self.assertIsNotNone(second["compare_text"])
             self.assertIn("策略总收益", str(second["compare_text"]))
+
+    def test_export_walk_forward_record_compare_last(self) -> None:
+        wf_result_a = {
+            "windows_total": 3,
+            "windows_valid": 3,
+            "summary": {
+                "avg_total_return": 0.08,
+                "avg_annual_return": 0.12,
+                "worst_drawdown": -0.10,
+            },
+            "segment_comparison": {
+                "outperform_rate": 0.66,
+                "avg_excess_total_return": 0.03,
+            },
+            "windows": [],
+        }
+        wf_result_b = {
+            "windows_total": 3,
+            "windows_valid": 3,
+            "summary": {
+                "avg_total_return": 0.10,
+                "avg_annual_return": 0.15,
+                "worst_drawdown": -0.09,
+            },
+            "segment_comparison": {
+                "outperform_rate": 1.0,
+                "avg_excess_total_return": 0.05,
+            },
+            "windows": [],
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            first = export_walk_forward_record(
+                symbols=["600519", "000001", "300750"],
+                start="2025-02-28",
+                end="2026-03-05",
+                config={"train_days": 126, "test_days": 63, "step_days": 21, "sort_by": "annual_return"},
+                result=wf_result_a,
+                output_dir=temp_dir,
+                compare_last=True,
+            )
+            second = export_walk_forward_record(
+                symbols=["600519", "000001", "300750"],
+                start="2025-02-28",
+                end="2026-03-05",
+                config={"train_days": 126, "test_days": 63, "step_days": 21, "sort_by": "annual_return"},
+                result=wf_result_b,
+                output_dir=temp_dir,
+                compare_last=True,
+            )
+
+            self.assertIsNone(first["baseline_path"])
+            self.assertIsNotNone(second["baseline_path"])
+            self.assertTrue(os.path.exists(str(second["baseline_path"])))
+            self.assertIsNotNone(second["compare_text"])
+            self.assertIn("Walk-forward 对比", str(second["compare_text"]))
+            self.assertTrue(os.path.exists(str(second["json_path"])))
+            self.assertTrue(os.path.exists(str(second["md_path"])))
 
 
 if __name__ == "__main__":

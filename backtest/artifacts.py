@@ -169,6 +169,43 @@ def _build_compare_text(current_metrics: dict[str, float], previous_metrics: dic
     return "参数对比: " + "；".join(chunks[:8])
 
 
+def _wf_record_pattern(target_hash: str) -> str:
+    return f"wf_portfolio_{target_hash}_*.json"
+
+
+def _build_wf_compare_text(current: dict[str, Any], previous: dict[str, Any]) -> str:
+    current_summary = (current or {}).get("summary") or {}
+    previous_summary = (previous or {}).get("summary") or {}
+    current_segment = (current or {}).get("segment_comparison") or {}
+    previous_segment = (previous or {}).get("segment_comparison") or {}
+
+    rows: list[str] = []
+    compare_items = [
+        ("avg_total_return", "平均总收益", True, current_summary, previous_summary),
+        ("avg_annual_return", "平均年化收益", True, current_summary, previous_summary),
+        ("worst_drawdown", "最差回撤", True, current_summary, previous_summary),
+        ("outperform_rate", "超额窗口占比", True, current_segment, previous_segment),
+        ("avg_excess_total_return", "平均超额收益", True, current_segment, previous_segment),
+    ]
+    for key, label, percentage, cur_map, prev_map in compare_items:
+        if key not in cur_map or key not in prev_map:
+            continue
+        cur = float(cur_map.get(key, 0.0))
+        prev = float(prev_map.get(key, 0.0))
+        if abs(cur - prev) < 1e-10:
+            continue
+        rows.append(_format_metric_change(label, cur, prev, percentage))
+
+    cur_valid = int((current or {}).get("windows_valid", 0))
+    prev_valid = int((previous or {}).get("windows_valid", 0))
+    if cur_valid != prev_valid:
+        rows.append(f"有效窗口数 {cur_valid - prev_valid:+d}")
+
+    if not rows:
+        return "Walk-forward 对比: 与上次策略版本相比，核心分段指标无变化。"
+    return "Walk-forward 对比: " + "；".join(rows[:8])
+
+
 def export_backtest_record(
     mode: str,
     symbols: list[str],
@@ -237,6 +274,7 @@ def export_grid_results(
     sort_by: str,
     results: list[dict[str, Any]],
     output_dir: str,
+    robust_summary: Optional[dict[str, Any]] = None,
 ) -> dict[str, str]:
     normalized_mode = str(mode or "single").strip().lower()
     target_hash = _stable_hash(
@@ -266,6 +304,8 @@ def export_grid_results(
         "result_count": len(results),
         "results": results,
     }
+    if robust_summary:
+        payload["robust_summary"] = robust_summary
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2, sort_keys=True)
 
@@ -293,6 +333,38 @@ def export_grid_results(
             + f"{float(metrics.get('sharpe', 0.0)):.2f} | "
             + f"fee={float(params.get('fee_rate', 0.0)):.4f}, slip={float(params.get('slippage_bps', 0.0)):.1f}bps, hold={int(params.get('min_hold_days', 1))}, confirm={int(params.get('signal_confirm_days', 1))}, max_pos={int(params.get('max_positions', 1))}, stop={float(params.get('stop_loss_pct', 0.0)) * 100:.2f}%, take={float(params.get('take_profit_pct', 0.0)) * 100:.2f}%, dd_circuit={float(params.get('drawdown_circuit_pct', 0.0)) * 100:.2f}%, cooldown={int(params.get('circuit_cooldown_days', 0))}d, industry_cap={float(params.get('max_industry_weight', 1.0)) * 100:.2f}%, single_cap={float(params.get('max_single_weight', 1.0)) * 100:.2f}% |"
         )
+    robust = payload.get("robust_summary") or {}
+    robust_stats = robust.get("param_stats") or []
+    if robust and robust_stats:
+        md_lines.extend(
+            [
+                "",
+                "## 参数稳健区间报告",
+                "",
+                f"- 取样范围: Top {float(robust.get('top_ratio', 0.0)) * 100:.1f}% => {int(robust.get('selected_count', 0))}/{int(robust.get('total_count', 0))}",
+                f"- 门槛({robust.get('sort_by', sort_by)}): {float(robust.get('threshold', 0.0)):.6f}",
+            ]
+        )
+        for item in robust_stats:
+            key = str(item.get("key", ""))
+            val_min = float(item.get("min", 0.0))
+            val_max = float(item.get("max", 0.0))
+            val_mode = float(item.get("mode", 0.0))
+            if key in {"min_hold_days", "signal_confirm_days", "max_positions", "circuit_cooldown_days"}:
+                interval_text = f"{int(round(val_min))} ~ {int(round(val_max))}"
+                mode_text = f"{int(round(val_mode))}"
+            elif key == "slippage_bps":
+                interval_text = f"{val_min:.1f}bps ~ {val_max:.1f}bps"
+                mode_text = f"{val_mode:.1f}bps"
+            elif key in {"fee_rate", "stop_loss_pct", "take_profit_pct", "drawdown_circuit_pct", "max_industry_weight", "max_single_weight"}:
+                interval_text = f"{val_min * 100:.2f}% ~ {val_max * 100:.2f}%"
+                mode_text = f"{val_mode * 100:.2f}%"
+            else:
+                interval_text = f"{val_min:.4f} ~ {val_max:.4f}"
+                mode_text = f"{val_mode:.4f}"
+            md_lines.append(
+                f"- {item.get('label', key)}: 区间={interval_text}, 众数={mode_text}, 覆盖={float(item.get('mode_coverage', 0.0)) * 100:.1f}%"
+            )
     with open(md_path, "w", encoding="utf-8") as f:
         f.write("\n".join(md_lines))
 
@@ -362,7 +434,8 @@ def export_walk_forward_record(
     config: dict[str, Any],
     result: dict[str, Any],
     output_dir: str,
-) -> dict[str, str]:
+    compare_last: bool = False,
+) -> dict[str, Optional[str]]:
     normalized_symbols = _normalize_symbols(symbols)
     target_hash = _stable_hash(
         {
@@ -384,11 +457,29 @@ def export_walk_forward_record(
         "symbols": normalized_symbols,
         "period": {"start": start, "end": end},
         "config": dict(config or {}),
+        "target_hash": target_hash,
         "windows_total": int((result or {}).get("windows_total", 0)),
         "windows_valid": int((result or {}).get("windows_valid", 0)),
         "summary": dict((result or {}).get("summary") or {}),
+        "segment_comparison": dict((result or {}).get("segment_comparison") or {}),
         "windows": list((result or {}).get("windows") or []),
     }
+
+    baseline_path: Optional[str] = None
+    compare_text: Optional[str] = None
+    if compare_last:
+        candidates = sorted(
+            [p for p in out_dir.glob(_wf_record_pattern(target_hash)) if p.is_file()],
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        if candidates:
+            baseline_path = str(candidates[0])
+            try:
+                prev = _load_record(baseline_path)
+                compare_text = _build_wf_compare_text(payload, prev or {})
+            except Exception as exc:
+                compare_text = f"Walk-forward 对比: 读取历史基线失败（{type(exc).__name__}: {exc}）"
 
     json_path = out_dir / f"{prefix}.json"
     md_path = out_dir / f"{prefix}.md"
@@ -396,6 +487,7 @@ def export_walk_forward_record(
         json.dump(payload, f, ensure_ascii=False, indent=2, sort_keys=True)
 
     summary = payload.get("summary") or {}
+    segment = payload.get("segment_comparison") or {}
     md_lines = [
         "# Walk-forward 记录（portfolio）",
         "",
@@ -414,6 +506,14 @@ def export_walk_forward_record(
         f"- 最差回撤: {float(summary.get('worst_drawdown', 0.0)) * 100:.2f}%",
         f"- 最佳窗口ID: {int(summary.get('best_window_id', 0))}",
         f"- 最弱窗口ID: {int(summary.get('worst_window_id', 0))}",
+        "",
+        "## 分段对比（策略 vs 基准）",
+        f"- 超额为正窗口: {int(segment.get('positive_excess_windows', 0))}/{int(payload.get('windows_valid', 0))} ({float(segment.get('outperform_rate', 0.0)) * 100:.2f}%)",
+        f"- 平均策略收益: {float(segment.get('avg_strategy_total_return', 0.0)) * 100:.2f}%",
+        f"- 平均基准收益: {float(segment.get('avg_benchmark_total_return', 0.0)) * 100:.2f}%",
+        f"- 平均超额收益: {float(segment.get('avg_excess_total_return', 0.0)) * 100:.2f}%",
+        f"- 超额最佳窗口ID: {int(segment.get('best_excess_window_id', 0))}",
+        f"- 超额最弱窗口ID: {int(segment.get('worst_excess_window_id', 0))}",
         "",
         "## 窗口明细（前10）",
         "",
@@ -436,4 +536,9 @@ def export_walk_forward_record(
     with open(md_path, "w", encoding="utf-8") as f:
         f.write("\n".join(md_lines))
 
-    return {"json_path": str(json_path), "md_path": str(md_path)}
+    return {
+        "json_path": str(json_path),
+        "md_path": str(md_path),
+        "baseline_path": baseline_path,
+        "compare_text": compare_text,
+    }

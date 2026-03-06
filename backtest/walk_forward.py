@@ -145,6 +145,35 @@ def _summarize_windows(windows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _build_segment_comparison(windows: list[dict[str, Any]]) -> dict[str, Any]:
+    if not windows:
+        return {
+            "outperform_rate": 0.0,
+            "avg_strategy_total_return": 0.0,
+            "avg_benchmark_total_return": 0.0,
+            "avg_excess_total_return": 0.0,
+            "positive_excess_windows": 0,
+            "best_excess_window_id": 0,
+            "worst_excess_window_id": 0,
+        }
+
+    strategy_returns = np.array([float((row.get("metrics") or {}).get("total_return", 0.0)) for row in windows], dtype=float)
+    benchmark_returns = np.array([float((row.get("metrics") or {}).get("benchmark_return", 0.0)) for row in windows], dtype=float)
+    excess_returns = strategy_returns - benchmark_returns
+    positive_count = int(np.sum(excess_returns > 0.0))
+    best_idx = int(np.argmax(excess_returns))
+    worst_idx = int(np.argmin(excess_returns))
+    return {
+        "outperform_rate": float(positive_count / len(windows)),
+        "avg_strategy_total_return": float(np.mean(strategy_returns)),
+        "avg_benchmark_total_return": float(np.mean(benchmark_returns)),
+        "avg_excess_total_return": float(np.mean(excess_returns)),
+        "positive_excess_windows": positive_count,
+        "best_excess_window_id": int(windows[best_idx]["window_id"]),
+        "worst_excess_window_id": int(windows[worst_idx]["window_id"]),
+    }
+
+
 def run_portfolio_walk_forward(
     symbol_data: dict[str, pd.DataFrame],
     base_params: Optional[dict[str, Any]] = None,
@@ -182,6 +211,7 @@ def run_portfolio_walk_forward(
             "windows_total": 0,
             "windows_valid": 0,
             "summary": _summarize_windows([]),
+            "segment_comparison": _build_segment_comparison([]),
             "windows": [],
         }
 
@@ -253,6 +283,7 @@ def run_portfolio_walk_forward(
         "windows_total": len(windows),
         "windows_valid": len(rows),
         "summary": _summarize_windows(rows),
+        "segment_comparison": _build_segment_comparison(rows),
         "windows": rows,
     }
 
@@ -266,6 +297,7 @@ def format_walk_forward_report(result: dict[str, Any]) -> str:
     available_days = int(result.get("available_days", 0))
     required_days = int(result.get("required_days", 0))
     summary = result.get("summary") or {}
+    segment = result.get("segment_comparison") or {}
     if valid <= 0:
         reason = "样本不足或窗口内无有效回测结果。"
         if required_days > 0 and available_days > 0 and available_days < required_days:
@@ -290,6 +322,22 @@ def format_walk_forward_report(result: dict[str, Any]) -> str:
         f"- 最差回撤: {float(summary.get('worst_drawdown', 0.0)) * 100:.2f}%",
         f"- 最佳窗口: #{int(summary.get('best_window_id', 0))}",
         f"- 最弱窗口: #{int(summary.get('worst_window_id', 0))}",
+        "- 分段对比(策略 vs 基准):",
+        (
+            f"  超额为正窗口: {int(segment.get('positive_excess_windows', 0))}/{valid} "
+            f"({float(segment.get('outperform_rate', 0.0)) * 100:.2f}%)"
+        ),
+        (
+            f"  平均策略/基准/超额收益: "
+            f"{float(segment.get('avg_strategy_total_return', 0.0)) * 100:.2f}% / "
+            f"{float(segment.get('avg_benchmark_total_return', 0.0)) * 100:.2f}% / "
+            f"{float(segment.get('avg_excess_total_return', 0.0)) * 100:.2f}%"
+        ),
+        (
+            f"  超额最佳/最弱窗口: "
+            f"#{int(segment.get('best_excess_window_id', 0))} / "
+            f"#{int(segment.get('worst_excess_window_id', 0))}"
+        ),
     ]
     rows = list(result.get("windows") or [])
     if rows:

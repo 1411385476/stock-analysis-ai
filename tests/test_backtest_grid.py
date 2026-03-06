@@ -8,9 +8,11 @@ import pandas as pd
 from backtest.artifacts import export_grid_results
 from backtest.grid_search import (
     build_backtest_param_grid,
+    format_robust_range_report,
     format_grid_report,
     run_portfolio_grid_backtest,
     run_single_grid_backtest,
+    summarize_grid_robust_ranges,
 )
 from factors.indicators import add_indicators
 
@@ -125,6 +127,87 @@ class BacktestGridTestCase(unittest.TestCase):
             self.assertTrue(os.path.exists(out["json_path"]))
             self.assertTrue(os.path.exists(out["csv_path"]))
             self.assertTrue(os.path.exists(out["md_path"]))
+
+    def test_summarize_and_format_robust_ranges(self) -> None:
+        rows = [
+            {
+                "params": {
+                    "fee_rate": 0.001,
+                    "slippage_bps": 4.0,
+                    "min_hold_days": 2,
+                    "signal_confirm_days": 2,
+                    "max_positions": 1,
+                },
+                "metrics": {"annual_return": 0.25, "total_return": 0.19, "max_drawdown": -0.12, "sharpe": 1.1},
+            },
+            {
+                "params": {
+                    "fee_rate": 0.001,
+                    "slippage_bps": 8.0,
+                    "min_hold_days": 3,
+                    "signal_confirm_days": 2,
+                    "max_positions": 1,
+                },
+                "metrics": {"annual_return": 0.24, "total_return": 0.18, "max_drawdown": -0.12, "sharpe": 1.0},
+            },
+            {
+                "params": {
+                    "fee_rate": 0.0015,
+                    "slippage_bps": 12.0,
+                    "min_hold_days": 5,
+                    "signal_confirm_days": 1,
+                    "max_positions": 2,
+                },
+                "metrics": {"annual_return": 0.20, "total_return": 0.16, "max_drawdown": -0.13, "sharpe": 0.9},
+            },
+        ]
+        summary = summarize_grid_robust_ranges(rows, sort_by="annual_return", top_ratio=0.67, min_top_n=1)
+        self.assertEqual(summary.get("total_count"), 3)
+        self.assertEqual(summary.get("selected_count"), 3)
+        self.assertIn("param_stats", summary)
+        text = format_robust_range_report(summary)
+        self.assertIn("参数稳健区间报告", text)
+        self.assertIn("手续费率", text)
+
+    def test_export_grid_results_with_robust_summary(self) -> None:
+        rows = [
+            {
+                "params": {
+                    "fee_rate": 0.001,
+                    "slippage_bps": 8.0,
+                    "min_hold_days": 3,
+                    "signal_confirm_days": 2,
+                    "max_positions": 2,
+                },
+                "metrics": {
+                    "annual_return": 0.20,
+                    "total_return": 0.15,
+                    "max_drawdown": -0.12,
+                    "sharpe": 1.0,
+                    "calmar": 1.5,
+                    "win_rate": 0.5,
+                    "trades": 10,
+                },
+            }
+        ]
+        robust = summarize_grid_robust_ranges(rows, sort_by="annual_return", top_ratio=1.0, min_top_n=1)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            out = export_grid_results(
+                mode="portfolio",
+                symbols=["600519", "000001", "300750"],
+                start="2025-02-28",
+                end="2026-03-05",
+                sort_by="annual_return",
+                results=rows,
+                output_dir=temp_dir,
+                robust_summary=robust,
+            )
+            with open(out["json_path"], "r", encoding="utf-8") as f:
+                payload = f.read()
+            with open(out["md_path"], "r", encoding="utf-8") as f:
+                md_text = f.read()
+            self.assertIn("robust_summary", payload)
+            self.assertIn("参数稳健区间报告", md_text)
 
 
 if __name__ == "__main__":

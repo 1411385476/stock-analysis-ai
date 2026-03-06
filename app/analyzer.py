@@ -14,11 +14,13 @@ from backtest.engine import (
 )
 from backtest.grid_search import (
     build_backtest_param_grid,
+    format_robust_range_report,
     format_grid_report,
     parse_float_list,
     parse_int_list,
     run_portfolio_grid_backtest,
     run_single_grid_backtest,
+    summarize_grid_robust_ranges,
 )
 from backtest.walk_forward import format_walk_forward_report, run_portfolio_walk_forward
 from data.providers.market_data import fetch_a_share_history, get_last_fetch_error
@@ -152,6 +154,10 @@ def analyze_stock(
                 best = grid_results[0]
                 best_metrics = best.get("metrics") or {}
                 best_params = best.get("params") or {}
+                robust_summary = summarize_grid_robust_ranges(
+                    results=grid_results,
+                    sort_by=bt_grid_sort_by,
+                )
                 bt_lines = [
                     "参数网格最佳组合:",
                     format_backtest_report(best_metrics),
@@ -171,6 +177,8 @@ def analyze_stock(
                         sort_by=bt_grid_sort_by,
                         top_n=bt_grid_top,
                     ),
+                    "",
+                    format_robust_range_report(robust_summary),
                 ]
                 if bt_save:
                     output_dir = bt_output_dir or CONFIG.backtest_output_dir
@@ -197,6 +205,7 @@ def analyze_stock(
                         sort_by=bt_grid_sort_by,
                         results=grid_results,
                         output_dir=output_dir,
+                        robust_summary=robust_summary,
                     )
                     bt_lines.extend(
                         [
@@ -435,6 +444,10 @@ def analyze_portfolio(
             return "参数网格回测结果: 无有效结果。"
         best_metrics = grid_results[0].get("metrics") or {}
         best_params = grid_results[0].get("params") or {}
+        robust_summary = summarize_grid_robust_ranges(
+            results=grid_results,
+            sort_by=bt_grid_sort_by,
+        )
     else:
         metrics = run_portfolio_backtest(
             symbol_data=prepared,
@@ -497,6 +510,8 @@ def analyze_portfolio(
                     sort_by=bt_grid_sort_by,
                     top_n=bt_grid_top,
                 ),
+                "",
+                format_robust_range_report(robust_summary),
             ]
         )
 
@@ -544,6 +559,7 @@ def analyze_portfolio(
                 sort_by=bt_grid_sort_by,
                 results=grid_results,
                 output_dir=output_dir,
+                robust_summary=robust_summary if bt_grid else None,
             )
             lines.extend(
                 [
@@ -570,6 +586,7 @@ def analyze_portfolio(
                 },
                 result=walk_forward_result,
                 output_dir=output_dir,
+                compare_last=bt_compare_last,
             )
             lines.extend(
                 [
@@ -577,6 +594,10 @@ def analyze_portfolio(
                     f"- Walk-forward Markdown: {wf_export['md_path']}",
                 ]
             )
+            if wf_export.get("baseline_path"):
+                lines.append(f"- Walk-forward 对比基线: {wf_export['baseline_path']}")
+            if wf_export.get("compare_text"):
+                lines.append(str(wf_export["compare_text"]))
     if risk_report:
         risk = evaluate_portfolio_risk(
             metrics=best_metrics,
