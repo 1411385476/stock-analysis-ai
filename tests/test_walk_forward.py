@@ -49,6 +49,8 @@ class WalkForwardTestCase(unittest.TestCase):
                 "min_hold_days": 3,
                 "signal_confirm_days": 2,
                 "max_positions": 2,
+                "rebalance_frequency": "weekly",
+                "rebalance_weekday": 2,
             },
             train_days=120,
             test_days=60,
@@ -62,6 +64,10 @@ class WalkForwardTestCase(unittest.TestCase):
         self.assertIn("avg_annual_return", summary)
         segment = result.get("segment_comparison") or {}
         self.assertIn("outperform_rate", segment)
+        first_window = (result.get("windows") or [])[0]
+        params = first_window.get("params") or {}
+        self.assertEqual(str(params.get("rebalance_frequency", "")), "weekly")
+        self.assertEqual(int(params.get("rebalance_weekday", 0)), 2)
 
         text = format_walk_forward_report(result)
         self.assertIn("Walk-forward评估", text)

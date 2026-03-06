@@ -3,7 +3,7 @@ import os
 import tempfile
 import unittest
 
-from backtest.artifacts import export_backtest_record, export_walk_forward_record
+from backtest.artifacts import export_backtest_record, export_rebalance_log, export_walk_forward_record
 
 
 def _sample_params() -> dict[str, float]:
@@ -151,6 +151,36 @@ class BacktestArtifactsTestCase(unittest.TestCase):
             self.assertIn("Walk-forward 对比", str(second["compare_text"]))
             self.assertTrue(os.path.exists(str(second["json_path"])))
             self.assertTrue(os.path.exists(str(second["md_path"])))
+
+    def test_export_rebalance_log(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            out = export_rebalance_log(
+                mode="portfolio",
+                symbols=["600519", "000001"],
+                start="2025-03-01",
+                end="2026-03-06",
+                params={"fee_rate": 0.001},
+                records=[
+                    {
+                        "date": "2026-03-03",
+                        "symbol": "600519",
+                        "action": "buy",
+                        "reason": "signal_entry",
+                        "from_weight": 0.0,
+                        "to_weight": 0.5,
+                        "delta_weight": 0.5,
+                        "price": 1399.0,
+                        "rebalance_frequency": "weekly",
+                        "is_rebalance_day": "1",
+                    }
+                ],
+                output_dir=temp_dir,
+            )
+            self.assertTrue(os.path.exists(out["csv_path"]))
+            self.assertTrue(os.path.exists(out["md_path"]))
+            with open(out["md_path"], "r", encoding="utf-8") as f:
+                content = f.read()
+            self.assertIn("signal_entry", content)
 
 
 if __name__ == "__main__":

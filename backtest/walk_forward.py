@@ -41,6 +41,12 @@ def _normalize_backtest_params(params: Optional[dict[str, Any]]) -> dict[str, An
         "circuit_cooldown_days": _safe_int(raw.get("circuit_cooldown_days"), 0, minimum=0),
         "max_industry_weight": _safe_float(raw.get("max_industry_weight"), 1.0, maximum=1.0),
         "max_single_weight": _safe_float(raw.get("max_single_weight"), 1.0, maximum=1.0),
+        "target_volatility": _safe_float(raw.get("target_volatility"), 0.0),
+        "vol_lookback_days": _safe_int(raw.get("vol_lookback_days"), 20, minimum=5),
+        "min_capital_utilization": _safe_float(raw.get("min_capital_utilization"), 0.0, maximum=1.0),
+        "max_capital_utilization": _safe_float(raw.get("max_capital_utilization"), 1.0, maximum=1.0),
+        "rebalance_frequency": str(raw.get("rebalance_frequency", "daily")).strip().lower() or "daily",
+        "rebalance_weekday": _safe_int(raw.get("rebalance_weekday"), 0, minimum=0),
     }
 
 
@@ -258,6 +264,12 @@ def run_portfolio_walk_forward(
             max_single_weight=chosen_params["max_single_weight"],
             drawdown_circuit_pct=chosen_params["drawdown_circuit_pct"],
             circuit_cooldown_days=chosen_params["circuit_cooldown_days"],
+            target_volatility=chosen_params["target_volatility"],
+            vol_lookback_days=chosen_params["vol_lookback_days"],
+            min_capital_utilization=chosen_params["min_capital_utilization"],
+            max_capital_utilization=chosen_params["max_capital_utilization"],
+            rebalance_frequency=chosen_params["rebalance_frequency"],
+            rebalance_weekday=min(max(int(chosen_params["rebalance_weekday"]), 0), 4),
         )
         if not metrics:
             continue

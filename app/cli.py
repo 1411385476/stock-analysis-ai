@@ -43,6 +43,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bt-circuit-cooldown-days", type=int, default=0, help="回撤熔断冷却天数，默认0")
     parser.add_argument("--bt-max-industry-weight", type=float, default=1.0, help="行业权重上限(0-1)，默认1.0")
     parser.add_argument("--bt-max-single-weight", type=float, default=1.0, help="单票权重上限(0-1)，默认1.0")
+    parser.add_argument("--bt-target-volatility", type=float, default=0.0, help="组合目标年化波动率(0-1)，默认0(禁用)")
+    parser.add_argument("--bt-vol-lookback-days", type=int, default=20, help="波动率控制回看天数，默认20")
+    parser.add_argument("--bt-min-capital-utilization", type=float, default=0.0, help="资金利用率下限(0-1)，默认0")
+    parser.add_argument("--bt-max-capital-utilization", type=float, default=1.0, help="资金利用率上限(0-1)，默认1")
+    parser.add_argument(
+        "--bt-rebalance-frequency",
+        choices=["daily", "weekly", "monthly"],
+        default="daily",
+        help="组合再平衡频率: daily/weekly/monthly，默认 daily",
+    )
+    parser.add_argument("--bt-rebalance-weekday", type=int, default=0, help="周再平衡日(0=周一..4=周五)，默认0")
     parser.add_argument("--industry-map-file", help="行业映射CSV（含 symbol/code 与 industry/行业 列）")
     parser.add_argument("--industry-level", choices=["auto", "l1", "l2"], default="auto", help="行业层级: auto/l1/l2，默认 auto")
     parser.add_argument("--bt-grid", action="store_true", help="启用参数网格回测")
@@ -172,6 +183,12 @@ def main() -> int:
                 bt_circuit_cooldown_days=args.bt_circuit_cooldown_days,
                 bt_max_industry_weight=args.bt_max_industry_weight,
                 bt_max_single_weight=args.bt_max_single_weight,
+                bt_target_volatility=args.bt_target_volatility,
+                bt_vol_lookback_days=args.bt_vol_lookback_days,
+                bt_min_capital_utilization=args.bt_min_capital_utilization,
+                bt_max_capital_utilization=args.bt_max_capital_utilization,
+                bt_rebalance_frequency=args.bt_rebalance_frequency,
+                bt_rebalance_weekday=args.bt_rebalance_weekday,
                 industry_map_file=args.industry_map_file,
                 industry_level=args.industry_level,
                 bt_grid=args.bt_grid,

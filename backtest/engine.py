@@ -57,6 +57,34 @@ def _sanitize_portfolio_risk_params(
     )
 
 
+def _sanitize_vol_util_params(
+    target_volatility: float,
+    vol_lookback_days: int,
+    min_capital_utilization: float,
+    max_capital_utilization: float,
+) -> tuple[float, int, float, float]:
+    safe_target_vol = max(float(target_volatility), 0.0)
+    safe_lookback = max(int(vol_lookback_days), 5)
+    safe_min_util = min(max(float(min_capital_utilization), 0.0), 1.0)
+    safe_max_util = min(max(float(max_capital_utilization), 0.0), 1.0)
+    if safe_max_util <= 0:
+        safe_max_util = 1.0
+    if safe_min_util > safe_max_util:
+        safe_min_util = safe_max_util
+    return safe_target_vol, safe_lookback, safe_min_util, safe_max_util
+
+
+def _sanitize_rebalance_params(
+    rebalance_frequency: str,
+    rebalance_weekday: int,
+) -> tuple[str, int]:
+    freq = str(rebalance_frequency or "daily").strip().lower()
+    if freq not in {"daily", "weekly", "monthly"}:
+        freq = "daily"
+    weekday = min(max(int(rebalance_weekday), 0), 4)
+    return freq, weekday
+
+
 def _signal_columns(data: pd.DataFrame, signal_confirm_days: int) -> tuple[pd.Series, pd.Series, pd.Series]:
     buy_raw = (
         (data["MA20"] > data["MA60"])
@@ -128,6 +156,23 @@ def _build_metrics(
     max_single_weight_limit: float = 1.0,
     max_single_weight_used: float = 0.0,
     avg_capital_utilization: float = 0.0,
+    target_volatility: float = 0.0,
+    realized_volatility: float = 0.0,
+    vol_lookback_days: float = 20.0,
+    vol_control_active_days: float = 0.0,
+    avg_exposure_scale: float = 1.0,
+    min_exposure_scale: float = 1.0,
+    max_exposure_scale: float = 1.0,
+    min_capital_utilization_limit: float = 0.0,
+    max_capital_utilization_limit: float = 1.0,
+    capital_util_floor_breaches: float = 0.0,
+    capital_util_cap_hits: float = 0.0,
+    rebalance_days: float = 0.0,
+    rebalance_event_count: float = 0.0,
+    rebalance_signal_entries: float = 0.0,
+    rebalance_signal_exits: float = 0.0,
+    rebalance_risk_exits: float = 0.0,
+    rebalance_scale_events: float = 0.0,
 ) -> Dict[str, float]:
     equity = (1.0 + strategy_ret).cumprod()
     benchmark_equity = (1.0 + benchmark_ret).cumprod()
@@ -190,6 +235,23 @@ def _build_metrics(
         "industry_blocked_entries": float(industry_blocked_entries),
         "max_single_weight_limit": float(max_single_weight_limit),
         "max_single_weight_used": float(max_single_weight_used),
+        "target_volatility": float(target_volatility),
+        "realized_volatility": float(realized_volatility),
+        "vol_lookback_days": float(vol_lookback_days),
+        "vol_control_active_days": float(vol_control_active_days),
+        "avg_exposure_scale": float(avg_exposure_scale),
+        "min_exposure_scale": float(min_exposure_scale),
+        "max_exposure_scale": float(max_exposure_scale),
+        "min_capital_utilization_limit": float(min_capital_utilization_limit),
+        "max_capital_utilization_limit": float(max_capital_utilization_limit),
+        "capital_util_floor_breaches": float(capital_util_floor_breaches),
+        "capital_util_cap_hits": float(capital_util_cap_hits),
+        "rebalance_days": float(rebalance_days),
+        "rebalance_event_count": float(rebalance_event_count),
+        "rebalance_signal_entries": float(rebalance_signal_entries),
+        "rebalance_signal_exits": float(rebalance_signal_exits),
+        "rebalance_risk_exits": float(rebalance_risk_exits),
+        "rebalance_scale_events": float(rebalance_scale_events),
         "rolling_drawdown_63": float(rolling_dd_63),
         "rolling_drawdown_126": float(rolling_dd_126),
         "rolling_drawdown_252": float(rolling_dd_252),
@@ -294,7 +356,7 @@ def run_backtest(
             last_entry_price = None
         last_position = row["position"]
 
-    return _build_metrics(
+    metrics = _build_metrics(
         strategy_ret=strategy_ret,
         benchmark_ret=benchmark_ret,
         trades=float(trades),
@@ -313,6 +375,7 @@ def run_backtest(
         take_profit_pct=take_profit_pct,
         risk_exits=float(risk_exits),
     )
+    return metrics
 
 
 def run_portfolio_backtest(
@@ -329,6 +392,12 @@ def run_portfolio_backtest(
     max_single_weight: float = 1.0,
     drawdown_circuit_pct: float = 0.0,
     circuit_cooldown_days: int = 0,
+    target_volatility: float = 0.0,
+    vol_lookback_days: int = 20,
+    min_capital_utilization: float = 0.0,
+    max_capital_utilization: float = 1.0,
+    rebalance_frequency: str = "daily",
+    rebalance_weekday: int = 0,
 ) -> Dict[str, float]:
     """
     Multi-symbol portfolio backtest with equal-weight active holdings.
@@ -353,6 +422,16 @@ def run_portfolio_backtest(
         circuit_cooldown_days=circuit_cooldown_days,
         max_industry_weight=max_industry_weight,
         max_single_weight=max_single_weight,
+    )
+    target_volatility, vol_lookback_days, min_capital_utilization, max_capital_utilization = _sanitize_vol_util_params(
+        target_volatility=target_volatility,
+        vol_lookback_days=vol_lookback_days,
+        min_capital_utilization=min_capital_utilization,
+        max_capital_utilization=max_capital_utilization,
+    )
+    rebalance_frequency, rebalance_weekday = _sanitize_rebalance_params(
+        rebalance_frequency=rebalance_frequency,
+        rebalance_weekday=rebalance_weekday,
     )
 
     prepared: dict[str, pd.DataFrame] = {}
@@ -419,14 +498,37 @@ def run_portfolio_backtest(
     max_active_positions_seen = 0.0
     max_industry_weight_used = 0.0
     max_single_weight_used = 0.0
+    exposure_scale_values: list[float] = []
+    rebalance_log: list[dict[str, float | str]] = []
     industry_blocked_entries = 0
+    capital_util_floor_breaches = 0
+    capital_util_cap_hits = 0
+    vol_control_active_days = 0
+    rebalance_days = 0
+    rebalance_event_count = 0
+    rebalance_signal_entries = 0
+    rebalance_signal_exits = 0
+    rebalance_risk_exits = 0
+    rebalance_scale_events = 0
     drawdown_circuit_triggers = 0
     circuit_active_days = 0
     cooldown_remaining = 0
     equity = 1.0
     peak = 1.0
 
-    for ts in common_index:
+    for i, ts in enumerate(common_index):
+        prev_ts = common_index[i - 1] if i > 0 else None
+        if rebalance_frequency == "daily":
+            is_rebalance_day = True
+        elif rebalance_frequency == "weekly":
+            is_rebalance_day = int(ts.weekday()) == int(rebalance_weekday) and (
+                prev_ts is None or int(prev_ts.weekday()) != int(rebalance_weekday)
+            )
+        else:
+            is_rebalance_day = prev_ts is None or int(ts.month) != int(prev_ts.month)
+
+        exit_reasons: dict[str, str] = {}
+        entry_symbols: set[str] = set()
         if cooldown_remaining > 0:
             if holdings:
                 for s in list(holdings):
@@ -438,24 +540,29 @@ def run_portfolio_backtest(
                         entry_price.pop(s, None)
                     holdings.remove(s)
                     hold_days[s] = 0
+                    exit_reasons[s] = "circuit_exit"
                 risk_exits += 1
             cooldown_remaining -= 1
             circuit_active_days += 1
         else:
+            if is_rebalance_day:
+                rebalance_days += 1
+
             for s in list(holdings):
                 hold_days[s] += 1
 
             for s in list(holdings):
                 exit_price = float(close_df.at[ts, s])
-                risk_exit = False
+                risk_reason = ""
                 if s in entry_price:
                     entry = float(entry_price[s])
                     if stop_loss_pct > 0 and exit_price <= entry * (1.0 - stop_loss_pct):
-                        risk_exit = True
-                    if take_profit_pct > 0 and exit_price >= entry * (1.0 + take_profit_pct):
-                        risk_exit = True
+                        risk_reason = "risk_stop_loss"
+                    elif take_profit_pct > 0 and exit_price >= entry * (1.0 + take_profit_pct):
+                        risk_reason = "risk_take_profit"
 
-                should_exit = risk_exit or (hold_days[s] >= min_hold_days and bool(sell_df.at[ts, s]))
+                signal_exit = is_rebalance_day and hold_days[s] >= min_hold_days and bool(sell_df.at[ts, s])
+                should_exit = bool(risk_reason) or bool(signal_exit)
                 if not should_exit:
                     continue
 
@@ -466,32 +573,105 @@ def run_portfolio_backtest(
                     entry_price.pop(s, None)
                 holdings.remove(s)
                 hold_days[s] = 0
-                if risk_exit:
+                if risk_reason:
                     risk_exits += 1
+                    exit_reasons[s] = risk_reason
+                else:
+                    exit_reasons[s] = "signal_exit"
 
-            slots = max_positions - len(holdings)
-            if slots > 0:
-                candidates = [s for s in symbols if s not in holdings and bool(buy_df.at[ts, s])]
-                if candidates:
-                    ranked = sorted(candidates, key=lambda s: (float(strength_df.at[ts, s]), s), reverse=True)
-                    for s in ranked:
-                        if slots <= 0:
-                            break
-                        target_industry = industry_by_symbol.get(s, s)
-                        same_industry_count = 0
-                        for h in holdings:
-                            if industry_by_symbol.get(h, h) == target_industry:
-                                same_industry_count += 1
-                        if same_industry_count + 1 > max_per_industry:
-                            industry_blocked_entries += 1
-                            continue
-                        holdings.add(s)
-                        hold_days[s] = 1
-                        entry_price[s] = float(close_df.at[ts, s])
-                        trades += 1
-                        slots -= 1
+            if is_rebalance_day:
+                slots = max_positions - len(holdings)
+                if slots > 0:
+                    candidates = [s for s in symbols if s not in holdings and bool(buy_df.at[ts, s])]
+                    if candidates:
+                        ranked = sorted(candidates, key=lambda s: (float(strength_df.at[ts, s]), s), reverse=True)
+                        for s in ranked:
+                            if slots <= 0:
+                                break
+                            target_industry = industry_by_symbol.get(s, s)
+                            same_industry_count = 0
+                            for h in holdings:
+                                if industry_by_symbol.get(h, h) == target_industry:
+                                    same_industry_count += 1
+                            if same_industry_count + 1 > max_per_industry:
+                                industry_blocked_entries += 1
+                                continue
+                            holdings.add(s)
+                            hold_days[s] = 1
+                            entry_price[s] = float(close_df.at[ts, s])
+                            entry_symbols.add(s)
+                            trades += 1
+                            slots -= 1
 
-        current_position = {s: (weight_per_position if s in holdings else 0.0) for s in symbols}
+        base_invested = float(len(holdings) * weight_per_position)
+        exposure_scale = 1.0
+        if is_rebalance_day and target_volatility > 0 and len(strategy_ret_values) >= vol_lookback_days:
+            recent = pd.Series(strategy_ret_values[-vol_lookback_days:])
+            realized_vol_recent = float(recent.std(ddof=0) * np.sqrt(252))
+            if realized_vol_recent > 0:
+                exposure_scale = min(1.0, target_volatility / realized_vol_recent)
+            if exposure_scale < 0.999999:
+                vol_control_active_days += 1
+
+        if is_rebalance_day and base_invested > 0:
+            cap_scale = min(1.0, max_capital_utilization / base_invested) if max_capital_utilization < 1.0 else 1.0
+            if cap_scale + 1e-12 < exposure_scale:
+                capital_util_cap_hits += 1
+            exposure_scale = min(exposure_scale, cap_scale)
+
+            if min_capital_utilization > 0:
+                if base_invested < min_capital_utilization - 1e-12:
+                    capital_util_floor_breaches += 1
+                else:
+                    floor_scale = min(1.0, min_capital_utilization / base_invested)
+                    exposure_scale = max(exposure_scale, floor_scale)
+
+        if is_rebalance_day:
+            current_position = {s: (weight_per_position * exposure_scale if s in holdings else 0.0) for s in symbols}
+        else:
+            current_position = dict(prev_position)
+            for s in symbols:
+                if s not in holdings:
+                    current_position[s] = 0.0
+                elif current_position[s] <= 0:
+                    current_position[s] = weight_per_position
+        if base_invested > 0:
+            applied_scale = float(sum(current_position[s] for s in holdings)) / base_invested
+            exposure_scale_values.append(applied_scale)
+
+        for s in symbols:
+            prev_w = float(prev_position[s])
+            curr_w = float(current_position[s])
+            if abs(curr_w - prev_w) <= 1e-12:
+                continue
+            reason = "rebalance_scale"
+            if prev_w <= 1e-12 and curr_w > 1e-12:
+                reason = "signal_entry" if s in entry_symbols else "rebalance_entry"
+                rebalance_signal_entries += 1
+            elif prev_w > 1e-12 and curr_w <= 1e-12:
+                reason = str(exit_reasons.get(s, "signal_exit"))
+                if reason == "signal_exit":
+                    rebalance_signal_exits += 1
+                else:
+                    rebalance_risk_exits += 1
+            else:
+                rebalance_scale_events += 1
+            rebalance_event_count += 1
+            rebalance_log.append(
+                {
+                    "date": str(pd.Timestamp(ts).strftime("%Y-%m-%d")),
+                    "symbol": s,
+                    "action": "buy" if curr_w > prev_w else "sell",
+                    "reason": reason,
+                    "from_weight": prev_w,
+                    "to_weight": curr_w,
+                    "delta_weight": float(curr_w - prev_w),
+                    "price": float(close_df.at[ts, s]),
+                    "rebalance_frequency": rebalance_frequency,
+                    "is_rebalance_day": "1" if is_rebalance_day else "0",
+                }
+            )
+
         active_prev = float(sum(1 for s in symbols if prev_position[s] > 0))
         invested_prev = float(sum(prev_position.values()))
         max_active_positions_seen = max(max_active_positions_seen, active_prev)
@@ -509,15 +689,17 @@ def run_portfolio_backtest(
         active_positions_values.append(active_prev)
         capital_util_values.append(invested_prev)
 
-        industry_counts: dict[str, int] = {}
-        for s in holdings:
+        industry_weights: dict[str, float] = {}
+        for s, weight in current_position.items():
+            if weight <= 0:
+                continue
             industry = industry_by_symbol.get(s, s)
-            industry_counts[industry] = industry_counts.get(industry, 0) + 1
-        if industry_counts:
-            day_max = max(industry_counts.values()) * weight_per_position
+            industry_weights[industry] = industry_weights.get(industry, 0.0) + float(weight)
+        if industry_weights:
+            day_max = max(industry_weights.values())
             max_industry_weight_used = max(max_industry_weight_used, day_max)
         if holdings:
-            max_single_weight_used = max(max_single_weight_used, weight_per_position)
+            max_single_weight_used = max(max_single_weight_used, max(float(current_position[s]) for s in holdings))
 
         equity *= (1.0 + strategy_today)
         peak = max(peak, equity)
@@ -535,8 +717,17 @@ def run_portfolio_backtest(
 
     strategy_ret = pd.Series(strategy_ret_values, index=common_index)
     active_positions = pd.Series(active_positions_values, index=common_index)
+    realized_volatility = float(strategy_ret.std(ddof=0) * np.sqrt(252)) if len(strategy_ret) > 1 else 0.0
+    if exposure_scale_values:
+        avg_exposure_scale = float(np.mean(exposure_scale_values))
+        min_exposure_scale = float(np.min(exposure_scale_values))
+        max_exposure_scale = float(np.max(exposure_scale_values))
+    else:
+        avg_exposure_scale = 1.0
+        min_exposure_scale = 1.0
+        max_exposure_scale = 1.0
 
-    return _build_metrics(
+    metrics = _build_metrics(
         strategy_ret=strategy_ret,
         benchmark_ret=benchmark_ret,
         trades=float(trades),
@@ -564,7 +755,28 @@ def run_portfolio_backtest(
         industry_blocked_entries=float(industry_blocked_entries),
         max_single_weight_limit=max_single_weight,
         max_single_weight_used=float(max_single_weight_used),
+        target_volatility=target_volatility,
+        realized_volatility=realized_volatility,
+        vol_lookback_days=float(vol_lookback_days),
+        vol_control_active_days=float(vol_control_active_days),
+        avg_exposure_scale=avg_exposure_scale,
+        min_exposure_scale=min_exposure_scale,
+        max_exposure_scale=max_exposure_scale,
+        min_capital_utilization_limit=min_capital_utilization,
+        max_capital_utilization_limit=max_capital_utilization,
+        capital_util_floor_breaches=float(capital_util_floor_breaches),
+        capital_util_cap_hits=float(capital_util_cap_hits),
+        rebalance_days=float(rebalance_days),
+        rebalance_event_count=float(rebalance_event_count),
+        rebalance_signal_entries=float(rebalance_signal_entries),
+        rebalance_signal_exits=float(rebalance_signal_exits),
+        rebalance_risk_exits=float(rebalance_risk_exits),
+        rebalance_scale_events=float(rebalance_scale_events),
     )
+    metrics["rebalance_frequency"] = rebalance_frequency
+    metrics["rebalance_weekday"] = float(rebalance_weekday)
+    metrics["rebalance_log"] = rebalance_log
+    return metrics
 
 
 def format_backtest_report(metrics: Dict[str, float]) -> str:
@@ -623,6 +835,15 @@ def format_portfolio_backtest_report(metrics: Dict[str, float]) -> str:
         yearly_text = ", ".join([f"{year}: {ret * 100:.2f}%" for year, ret in year_items])
     else:
         yearly_text = "N/A"
+    freq = str(metrics.get("rebalance_frequency", "daily"))
+    weekday = int(float(metrics.get("rebalance_weekday", 0)))
+    weekday_text = {0: "Mon", 1: "Tue", 2: "Wed", 3: "Thu", 4: "Fri"}.get(weekday, "Mon")
+    if freq == "weekly":
+        rebalance_mode_text = f"weekly({weekday_text})"
+    elif freq == "monthly":
+        rebalance_mode_text = "monthly(首个交易日)"
+    else:
+        rebalance_mode_text = "daily"
 
     return "\n".join(
         [
@@ -642,6 +863,10 @@ def format_portfolio_backtest_report(metrics: Dict[str, float]) -> str:
             f"- 平均持仓数: {metrics.get('avg_active_positions', 0.0):.2f}",
             f"- 最大持仓数: {metrics.get('max_active_positions', 0.0):.0f} / 限制 {int(metrics.get('max_positions', 1))}",
             f"- 资金利用率: 平均已投资资金={metrics.get('avg_capital_utilization', 0.0) * 100:.2f}%",
+            f"- 波动率控制: 目标={metrics.get('target_volatility', 0.0) * 100:.2f}% / 实现={metrics.get('realized_volatility', 0.0) * 100:.2f}% / lookback={int(metrics.get('vol_lookback_days', 20))}天 / 生效={int(metrics.get('vol_control_active_days', 0))}天",
+            f"- 资金利用率约束: 下限={metrics.get('min_capital_utilization_limit', 0.0) * 100:.2f}% / 上限={metrics.get('max_capital_utilization_limit', 1.0) * 100:.2f}% / 下限未达={int(metrics.get('capital_util_floor_breaches', 0))}天 / 上限触发={int(metrics.get('capital_util_cap_hits', 0))}天",
+            f"- 调仓模式: {rebalance_mode_text} / 调仓日数={int(metrics.get('rebalance_days', 0))} / 调仓事件={int(metrics.get('rebalance_event_count', 0))}",
+            f"- 调仓分解: 信号开仓={int(metrics.get('rebalance_signal_entries', 0))} / 信号平仓={int(metrics.get('rebalance_signal_exits', 0))} / 风控平仓={int(metrics.get('rebalance_risk_exits', 0))} / 仓位缩放={int(metrics.get('rebalance_scale_events', 0))}",
             f"- 单票约束: 上限={metrics.get('max_single_weight_limit', 1.0) * 100:.2f}% / 实际峰值={metrics.get('max_single_weight_used', 0.0) * 100:.2f}%",
             f"- 成本模型: 手续费={metrics.get('fee_rate', 0.0) * 100:.2f}% / 滑点={metrics.get('slippage_bps', 0.0):.1f}bps",
             f"- 交易约束: 最小持仓={int(metrics.get('min_hold_days', 1))}天 / 信号确认={int(metrics.get('signal_confirm_days', 1))}天",

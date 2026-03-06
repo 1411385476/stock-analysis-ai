@@ -316,6 +316,129 @@ class BacktestTestCase(unittest.TestCase):
         self.assertIn("卡玛比率", text)
         self.assertIn("滚动回撤", text)
         self.assertIn("年度分解", text)
+        self.assertIn("波动率控制", text)
+        self.assertIn("资金利用率约束", text)
+
+    def test_portfolio_backtest_target_volatility_controls_exposure(self) -> None:
+        idx = pd.date_range("2024-01-01", periods=140, freq="B")
+        close = 100.0 + np.sin(np.linspace(0, 60, len(idx))) * 30.0
+        frame = pd.DataFrame(
+            {
+                "Close": close,
+                "MA20": np.full(len(idx), 2.0),
+                "MA60": np.full(len(idx), 1.0),
+                "MACD": np.full(len(idx), 1.0),
+                "MACD_SIGNAL": np.zeros(len(idx)),
+                "RSI14": np.full(len(idx), 50.0),
+            },
+            index=idx,
+        )
+        symbol_data = {"AAA": frame, "BBB": frame}
+        base = run_portfolio_backtest(symbol_data, fee_rate=0.0, max_positions=1)
+        controlled = run_portfolio_backtest(
+            symbol_data,
+            fee_rate=0.0,
+            max_positions=1,
+            target_volatility=0.10,
+            vol_lookback_days=20,
+        )
+        self.assertGreater(base.get("realized_volatility", 0.0), 0.0)
+        self.assertGreater(controlled.get("vol_control_active_days", 0.0), 0.0)
+        self.assertLess(controlled.get("avg_exposure_scale", 1.0), 1.0)
+        self.assertLess(controlled.get("realized_volatility", 0.0), base.get("realized_volatility", 0.0))
+
+    def test_portfolio_backtest_capital_utilization_constraints(self) -> None:
+        idx = pd.date_range("2024-01-01", periods=120, freq="B")
+
+        def _mk_symbol(offset: float) -> pd.DataFrame:
+            return pd.DataFrame(
+                {
+                    "Close": np.linspace(100.0, 130.0 + offset, len(idx)),
+                    "MA20": np.full(len(idx), 2.0 + offset),
+                    "MA60": np.full(len(idx), 1.0),
+                    "MACD": np.full(len(idx), 1.0 + offset),
+                    "MACD_SIGNAL": np.zeros(len(idx)),
+                    "RSI14": np.full(len(idx), 50.0),
+                },
+                index=idx,
+            )
+
+        symbol_data = {"AAA": _mk_symbol(0.0), "BBB": _mk_symbol(0.2)}
+        capped = run_portfolio_backtest(
+            symbol_data,
+            fee_rate=0.0,
+            max_positions=1,
+            max_capital_utilization=0.25,
+        )
+        self.assertGreater(capped.get("capital_util_cap_hits", 0.0), 0.0)
+        self.assertLessEqual(capped.get("avg_capital_utilization", 1.0), 0.25 + 1e-9)
+
+        floor_breach = run_portfolio_backtest(
+            symbol_data,
+            fee_rate=0.0,
+            max_positions=1,
+            max_single_weight=0.35,
+            min_capital_utilization=0.60,
+        )
+        self.assertGreater(floor_breach.get("capital_util_floor_breaches", 0.0), 0.0)
+
+    def test_portfolio_backtest_rebalance_frequency_changes_rebalance_days(self) -> None:
+        idx = pd.date_range("2024-01-01", periods=80, freq="B")
+        frame = pd.DataFrame(
+            {
+                "Close": np.linspace(100.0, 130.0, len(idx)),
+                "MA20": np.full(len(idx), 2.0),
+                "MA60": np.full(len(idx), 1.0),
+                "MACD": np.full(len(idx), 1.0),
+                "MACD_SIGNAL": np.zeros(len(idx)),
+                "RSI14": np.full(len(idx), 50.0),
+            },
+            index=idx,
+        )
+        symbol_data = {"AAA": frame}
+
+        daily = run_portfolio_backtest(
+            symbol_data,
+            fee_rate=0.0,
+            max_positions=1,
+            rebalance_frequency="daily",
+        )
+        weekly = run_portfolio_backtest(
+            symbol_data,
+            fee_rate=0.0,
+            max_positions=1,
+            rebalance_frequency="weekly",
+            rebalance_weekday=0,
+        )
+
+        self.assertGreater(daily.get("rebalance_days", 0.0), weekly.get("rebalance_days", 0.0))
+        self.assertEqual(str(weekly.get("rebalance_frequency", "")), "weekly")
+        self.assertIsInstance(weekly.get("rebalance_log"), list)
+        self.assertGreater(len(weekly.get("rebalance_log", [])), 0)
+
+    def test_format_portfolio_backtest_report_contains_rebalance_section(self) -> None:
+        idx = pd.date_range("2024-01-01", periods=80, freq="B")
+        frame = pd.DataFrame(
+            {
+                "Close": np.linspace(100.0, 130.0, len(idx)),
+                "MA20": np.full(len(idx), 2.0),
+                "MA60": np.full(len(idx), 1.0),
+                "MACD": np.full(len(idx), 1.0),
+                "MACD_SIGNAL": np.zeros(len(idx)),
+                "RSI14": np.full(len(idx), 50.0),
+            },
+            index=idx,
+        )
+        metrics = run_portfolio_backtest(
+            {"AAA": frame},
+            max_positions=1,
+            rebalance_frequency="weekly",
+            rebalance_weekday=2,
+        )
+        text = format_portfolio_backtest_report(metrics)
+        self.assertIn("调仓模式", text)
+        self.assertIn("weekly(", text)
+        self.assertIn("调仓分解", text)
 
 
 if __name__ == "__main__":
