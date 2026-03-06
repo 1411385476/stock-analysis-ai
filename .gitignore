@@ -34,5 +34,7 @@ charts/*.png
 data/ashare_snapshots/
 data/candidate_pools/
 data/backtests/
+data/risk_reports/
+data/analysis_reports/
 portfolio.json
 *.log

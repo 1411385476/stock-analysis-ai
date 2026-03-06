@@ -1,4 +1,5 @@
 import argparse
+import json
 
 from app.analyzer import analyze_portfolio, analyze_stock
 from app.config import CONFIG
@@ -10,7 +11,8 @@ from data.repository.snapshot_store import (
     screen_ashare_snapshot,
     sync_ashare_snapshots,
 )
-from llm.qwen_client import get_last_qwen_error
+from llm.qwen_client import get_last_qwen_error, get_last_qwen_structured
+from llm.summarizer import evaluate_schema_completeness
 
 
 def parse_args() -> argparse.Namespace:
@@ -20,6 +22,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--start", help="开始日期 YYYY-MM-DD")
     parser.add_argument("--end", help="结束日期 YYYY-MM-DD")
     parser.add_argument("--no-llm", action="store_true", help="禁用Qwen解读")
+    parser.add_argument("--llm-json", action="store_true", help="输出Qwen结构化JSON结果（M5）")
+    parser.add_argument("--llm-stability-runs", type=int, default=1, help="低温度稳定性评估轮数，默认1(不评估)")
+    parser.add_argument("--llm-stability-temperature", type=float, default=0.1, help="低温度稳定性评估温度，默认0.1")
+    parser.add_argument("--analysis-save", action="store_true", help="导出单股分析记录（JSON/Markdown）")
+    parser.add_argument("--analysis-output-dir", help="单股分析导出目录（默认 data/analysis_reports）")
     parser.add_argument("--backtest", action="store_true", help="启用策略模板回测")
     parser.add_argument("--bt-fee-rate", type=float, default=0.001, help="回测手续费率（单边），默认0.001")
     parser.add_argument("--bt-slippage-bps", type=float, default=0.0, help="回测单边滑点（bps），默认0")
@@ -190,7 +197,7 @@ def main() -> int:
         )
         return 1
 
-    text, chart, llm_result, bt_result = analyze_stock(
+    text, chart, llm_result, bt_result, analysis_result, llm_stability_result = analyze_stock(
         symbol=args.symbol,
         start=args.start,
         end=args.end,
@@ -216,16 +223,36 @@ def main() -> int:
         bt_save=args.bt_save,
         bt_output_dir=args.bt_output_dir,
         bt_compare_last=args.bt_compare_last,
+        analysis_save=args.analysis_save,
+        analysis_output_dir=args.analysis_output_dir,
+        llm_stability_runs=args.llm_stability_runs,
+        llm_stability_temperature=args.llm_stability_temperature,
     )
 
     print(text)
     if bt_result:
         print("\n" + bt_result)
+    if analysis_result:
+        print("\n" + analysis_result)
     if chart:
         print(f"\n图表已保存: {chart}")
     if llm_result:
         print("\nQwen 解读:\n")
         print(llm_result)
+        if llm_stability_result:
+            print("\n" + llm_stability_result)
+        if args.llm_json:
+            payload = get_last_qwen_structured()
+            if payload:
+                print("\nQwen 结构化输出:\n")
+                print(json.dumps(payload, ensure_ascii=False, indent=2))
+                quality = evaluate_schema_completeness(payload)
+                print(
+                    "\nQwen Schema 质量:\n"
+                    f"- 齐全率: {quality.get('completeness_pct', 0.0):.2f}% "
+                    f"({int(quality.get('filled_fields', 0))}/{int(quality.get('total_fields', 0))})\n"
+                    f"- 通过95%阈值: {'是' if bool(quality.get('pass_95pct', False)) else '否'}"
+                )
     elif not args.no_llm and chart:
         print("\nQwen 解读不可用（请检查本地接口、模型名或环境变量）。")
         detail = get_last_qwen_error()

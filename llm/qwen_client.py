@@ -1,36 +1,54 @@
 import json
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 from urllib import error, request
 
 from app.config import CONFIG
 from app.logging_config import get_logger
 from app.utils import dedupe_keep_order
+from llm.prompts import SYSTEM_PROMPT, build_structured_analysis_prompt
+from llm.summarizer import format_structured_summary, parse_structured_summary
 
 logger = get_logger(__name__)
 LAST_QWEN_ERROR: Optional[str] = None
+LAST_QWEN_STRUCTURED: Optional[dict[str, Any]] = None
 
 
 def get_last_qwen_error() -> Optional[str]:
     return LAST_QWEN_ERROR
 
 
-def call_local_qwen(symbol: str, report_text: str, signals: Dict[str, str]) -> Optional[str]:
+def get_last_qwen_structured() -> Optional[dict[str, Any]]:
+    return LAST_QWEN_STRUCTURED
+
+
+def _postprocess_llm_content(raw_content: str) -> str:
+    global LAST_QWEN_STRUCTURED
+    parsed = parse_structured_summary(raw_content)
+    LAST_QWEN_STRUCTURED = parsed
+    return format_structured_summary(parsed)
+
+
+def call_local_qwen(
+    symbol: str,
+    report_text: str,
+    signals: Dict[str, str],
+    temperature: float = 0.1,
+    stability_mode: bool = False,
+) -> Optional[str]:
     """Call local OpenAI-compatible Qwen endpoint for signal explanation."""
     global LAST_QWEN_ERROR
+    global LAST_QWEN_STRUCTURED
     LAST_QWEN_ERROR = None
+    LAST_QWEN_STRUCTURED = None
+    safe_temperature = max(float(temperature), 0.0)
 
     candidate_bases = dedupe_keep_order([CONFIG.qwen_base_url.rstrip("/"), "http://127.0.0.1:11434/v1"])
     candidate_models = dedupe_keep_order([CONFIG.qwen_model, "qwen2.5:32b"])
-
-    prompt = (
-        f"你是A股量化研究助理。请基于以下技术信号给出简短解读与风险提示，"
-        f"不要给出确定性收益承诺。\n\n股票: {symbol}\n"
-        f"技术信号: {json.dumps(signals, ensure_ascii=False)}\n\n"
-        f"数据摘要:\n{report_text}\n\n"
-        "请输出3段：\n"
-        "1) 当前结构判断\n"
-        "2) 可执行观察点（2-3条）\n"
-        "3) 风险控制建议\n"
+    prompt = build_structured_analysis_prompt(
+        symbol=symbol,
+        report_text=report_text,
+        signals=signals,
+        stability_mode=stability_mode,
     )
 
     for base_url in candidate_bases:
@@ -42,9 +60,10 @@ def call_local_qwen(symbol: str, report_text: str, signals: Dict[str, str]) -> O
                         {
                             "model": model,
                             "messages": [
-                                {"role": "system", "content": "你是谨慎的A股技术分析助手。"},
+                                {"role": "system", "content": SYSTEM_PROMPT},
                                 {"role": "user", "content": prompt},
                             ],
+                            "options": {"temperature": safe_temperature},
                             "stream": False,
                         }
                     ).encode("utf-8"),
@@ -55,7 +74,7 @@ def call_local_qwen(symbol: str, report_text: str, signals: Dict[str, str]) -> O
                     with request.urlopen(native_req, timeout=CONFIG.qwen_timeout) as native_resp:
                         native_data = json.loads(native_resp.read().decode("utf-8"))
                         if "message" in native_data and "content" in native_data["message"]:
-                            return native_data["message"]["content"].strip()
+                            return _postprocess_llm_content(native_data["message"]["content"].strip())
                 except (error.URLError, error.HTTPError, TimeoutError, KeyError, IndexError, json.JSONDecodeError) as native_exc:
                     if LAST_QWEN_ERROR is None:
                         LAST_QWEN_ERROR = (
@@ -67,10 +86,10 @@ def call_local_qwen(symbol: str, report_text: str, signals: Dict[str, str]) -> O
             payload = {
                 "model": model,
                 "messages": [
-                    {"role": "system", "content": "你是谨慎的A股技术分析助手。"},
+                    {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": prompt},
                 ],
-                "temperature": 0.2,
+                "temperature": safe_temperature,
             }
 
             req = request.Request(
@@ -86,7 +105,7 @@ def call_local_qwen(symbol: str, report_text: str, signals: Dict[str, str]) -> O
             try:
                 with request.urlopen(req, timeout=CONFIG.qwen_timeout) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
-                    return data["choices"][0]["message"]["content"].strip()
+                    return _postprocess_llm_content(data["choices"][0]["message"]["content"].strip())
             except (error.URLError, error.HTTPError, TimeoutError, KeyError, IndexError, json.JSONDecodeError) as exc:
                 if LAST_QWEN_ERROR is None:
                     LAST_QWEN_ERROR = f"Qwen调用失败: {base_url}, model={model}, error={type(exc).__name__}: {exc}"
@@ -98,9 +117,10 @@ def call_local_qwen(symbol: str, report_text: str, signals: Dict[str, str]) -> O
                             {
                                 "model": model,
                                 "messages": [
-                                    {"role": "system", "content": "你是谨慎的A股技术分析助手。"},
+                                    {"role": "system", "content": SYSTEM_PROMPT},
                                     {"role": "user", "content": prompt},
                                 ],
+                                "options": {"temperature": safe_temperature},
                                 "stream": False,
                             }
                         ).encode("utf-8"),
@@ -111,7 +131,7 @@ def call_local_qwen(symbol: str, report_text: str, signals: Dict[str, str]) -> O
                         with request.urlopen(native_req, timeout=35) as native_resp:
                             native_data = json.loads(native_resp.read().decode("utf-8"))
                             if "message" in native_data and "content" in native_data["message"]:
-                                return native_data["message"]["content"].strip()
+                                return _postprocess_llm_content(native_data["message"]["content"].strip())
                     except (error.URLError, error.HTTPError, TimeoutError, KeyError, IndexError, json.JSONDecodeError) as native_exc:
                         if LAST_QWEN_ERROR is None:
                             LAST_QWEN_ERROR = (

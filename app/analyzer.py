@@ -22,13 +22,19 @@ from backtest.grid_search import (
 )
 from data.providers.market_data import fetch_a_share_history, get_last_fetch_error
 from factors.indicators import add_indicators
-from llm.qwen_client import call_local_qwen
+from llm.qwen_client import call_local_qwen, get_last_qwen_structured
+from llm.summarizer import (
+    evaluate_low_temp_stability,
+    evaluate_schema_completeness,
+    format_low_temp_stability_report,
+)
 from portfolio.industry import load_industry_map
 from portfolio.risk import (
     evaluate_portfolio_risk,
     export_portfolio_risk_report,
     format_portfolio_risk_summary,
 )
+from report.analysis_artifacts import build_analysis_record, export_analysis_record
 from report.charting import generate_chart
 from report.renderer import build_report
 from strategy.signal_engine import strategy_signals
@@ -62,7 +68,11 @@ def analyze_stock(
     bt_save: bool = False,
     bt_output_dir: Optional[str] = None,
     bt_compare_last: bool = False,
-) -> Tuple[str, Optional[str], Optional[str], Optional[str]]:
+    analysis_save: bool = False,
+    analysis_output_dir: Optional[str] = None,
+    llm_stability_runs: int = 1,
+    llm_stability_temperature: float = 0.1,
+) -> Tuple[str, Optional[str], Optional[str], Optional[str], Optional[str], Optional[str]]:
     symbol = normalize_symbol(symbol)
     if end is None:
         end = datetime.now().strftime("%Y-%m-%d")
@@ -79,6 +89,8 @@ def analyze_stock(
                 None,
                 None,
                 None,
+                None,
+                None,
             )
         detail = get_last_fetch_error()
         if detail:
@@ -90,12 +102,16 @@ def analyze_stock(
                 None,
                 None,
                 None,
+                None,
+                None,
             )
         return (
             format_error(
                 ErrorCode.DATA_FETCH,
                 f"无法获取 {symbol} 的历史行情，请检查代码、网络或时间区间。",
             ),
+            None,
+            None,
             None,
             None,
             None,
@@ -243,10 +259,60 @@ def analyze_stock(
                 backtest_text = "\n".join(bt_lines)
 
     llm_text = None
+    analysis_export_text = None
+    llm_stability_text = None
+    llm_stability_payload = None
     if with_llm:
-        llm_text = call_local_qwen(symbol, report, signals)
+        runs = max(int(llm_stability_runs), 1)
+        temperature = max(float(llm_stability_temperature), 0.0)
+        stability_samples = []
+        stability_mode = runs > 1
+        for _ in range(runs):
+            current = call_local_qwen(
+                symbol,
+                report,
+                signals,
+                temperature=temperature,
+                stability_mode=stability_mode,
+            )
+            if current:
+                llm_text = current
+            structured_item = get_last_qwen_structured()
+            if structured_item:
+                stability_samples.append(structured_item)
+        if runs > 1:
+            llm_stability_payload = evaluate_low_temp_stability(stability_samples, target_runs=runs)
+            llm_stability_text = format_low_temp_stability_report(llm_stability_payload)
+    llm_structured = get_last_qwen_structured()
 
-    return report, chart_path, llm_text, backtest_text
+    if analysis_save:
+        record = build_analysis_record(
+            symbol=symbol,
+            start=start,
+            end=end,
+            report_text=report,
+            signals=signals,
+            chart_path=chart_path,
+            llm_text=llm_text,
+            llm_structured=llm_structured,
+            llm_stability=llm_stability_payload,
+            backtest_text=backtest_text,
+        )
+        export_result = export_analysis_record(record, analysis_output_dir or CONFIG.analysis_output_dir)
+        quality = evaluate_schema_completeness(llm_structured)
+        analysis_export_text = "\n".join(
+            [
+                "分析文件已导出:",
+                f"- JSON: {export_result['json_path']}",
+                f"- Markdown: {export_result['md_path']}",
+                (
+                    f"- LLM Schema齐全率: {quality.get('completeness_pct', 0.0):.2f}% "
+                    f"({int(quality.get('filled_fields', 0))}/{int(quality.get('total_fields', 0))})"
+                ),
+            ]
+        )
+
+    return report, chart_path, llm_text, backtest_text, analysis_export_text, llm_stability_text
 
 
 def analyze_portfolio(
