@@ -54,6 +54,12 @@ cd /home/wgj/openclaw-finance && \
 venv312/bin/python stock_analyzer.py --scan --universe hs300 --top 20
 ```
 
+### 3.3 价值投资候选池（示例：Top20）
+```bash
+cd /home/wgj/openclaw-finance && \
+venv312/bin/python stock_analyzer.py --value-scan --universe all --value-top 20
+```
+
 ## 4. 回测模板
 
 ### 4.1 单股回测
@@ -109,19 +115,53 @@ cd /home/wgj/openclaw-finance && \
 venv312/bin/python -m dashboard.app --serve --port 8765
 ```
 
-## 7. 失败回退矩阵
+## 7. 日更流水线模板（M7 Week1）
+先 dry-run：
+
+```bash
+cd /home/wgj/openclaw-finance && \
+bash scripts/run_daily_pipeline.sh --dry-run
+```
+
+正式执行：
+
+```bash
+cd /home/wgj/openclaw-finance && \
+make pipeline-daily
+```
+
+自定义参数：
+
+```bash
+cd /home/wgj/openclaw-finance && \
+bash scripts/run_daily_pipeline.sh \
+  --single-symbol 600519 \
+  --portfolio-symbols 600519,000001,300750 \
+  --universe hs300 \
+  --top 20 \
+  --max-retries 2 \
+  --retry-delay-sec 15
+```
+
+健康状态文件：
+- `data/pipeline_runs/latest_health.json`
+
+## 8. 失败回退矩阵
 - `ProxyError/ConnectionError`：保持命令不变重试 1 次；仍失败则返回真实错误并结束。
 - `model 'default' not found`：切换到明确模型名，不再使用默认占位模型。
 - `gateway already running`：不要重启网关，直接复用现有连接。
 - `行业映射文件不存在`：提示补齐 `data/industry_map.csv` 后再执行风控模板。
 
-## 8. 推荐的 OpenClaw TUI 触发语句
+## 9. 推荐的 OpenClaw TUI 触发语句
 - 分析：`/skill stock-analyst 600519`
+- 日更流水线：`/skill pipeline-daily --skip-sync --max-retries 0`
 - 扫描：`执行候选池扫描：--scan --universe hs300 --top 20`
+- 价值投资 Top20：`最具价值投资的前20支股票`
+- 单股价值预判：`分析 600519 是否适合价值投资`
 - 回测：`执行组合回测模板（max_positions=2）`
 - 风控：`执行风险日报模板（industry + single weight）`
 
-## 9. 冒烟验收（Skill输出）
+## 10. 冒烟验收（Skill输出）
 将 TUI 输出保存到文本文件后执行：
 
 ```bash

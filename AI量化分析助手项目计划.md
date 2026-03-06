@@ -12,6 +12,7 @@
 - M5（第5周）：已完成（已落地提示词拆分 + JSON schema + 安全规则 + 分析导出与齐全率统计 + 低温度稳定性评估并通过）
 - M6（第6周）：已完成（Plotly Dashboard MVP + OpenClaw 指令模板固化 + 使用/运维手册交付 + CI 冒烟验收）
 - M7（v0.7）：已完成（Week1~Week4 全部落地，含 CI 回归快照漂移告警）
+- M8（v0.8）：规划中（价值投资自然语言交互 + 单股联网预判）
 
 ## 1. 项目目标
 
@@ -22,6 +23,7 @@
 - 模板回测：收益、回撤、夏普、胜率、交易次数
 - 组合风控：仓位限制、止损、回撤阈值告警
 - OpenClaw 交互：命令式调用和结构化输出
+- 价值投资模式：输出“适合价值投资”候选池、理由解释与单股预判
 
 ## 2. 当前基础（已具备）
 
@@ -76,7 +78,7 @@ openclaw-finance/
     integration/
 ```
 
-## 4. 里程碑与排期（7周，含 v0.7 规划）
+## 4. 里程碑与排期（含 v0.8 需求池）
 
 ### M1（第1周）：工程化重构 + 配置标准化
 
@@ -201,6 +203,26 @@ openclaw-finance/
 
 当前状态：已完成（Week1 日更流水线、Week2 Walk-forward+稳健区间+分段对比、Week3 目标波动率/资金利用率/周月再平衡/调仓记录、Week4 标准化 JSON + Dashboard V2 + CI 策略回归快照漂移告警均已落地）
 
+### M8（v0.8，2周）：价值投资者视角增强（新增需求）
+
+- Week 1：自然语言意图触发（OpenClaw TUI）
+  - 支持自然语言直接触发价值投资命令，不要求用户记参数。
+  - 示例意图：
+    - “最具价值投资的前20支股票” -> `venv312/bin/python stock_analyzer.py --value-scan --universe all --value-top 20`
+    - “分析 600519 是否适合价值投资” -> `venv312/bin/python stock_analyzer.py 600519 --value --value-news-limit 5`
+  - 输出需包含：执行时间、关键理由、风险提示、结果文件路径（如有）。
+- Week 2：单股联网信息补强与预判解释
+  - 在单股价值模式中聚合近期网络信息（新闻/事件）并给出来源摘要。
+  - 输出三情景预判（bull/base/bear）与可追溯理由（估值、质量、分红、风险）。
+  - 保持风险声明：仅供研究，不构成投资建议。
+
+验收标准：
+
+- 自然语言触发模板命中率 >= 95%（以预置样例集回归）。
+- “前20价值股”输出包含评分、理由、导出文件路径。
+- 单股价值报告包含三情景预判 + 风险点 + 至少 3 条网络信息摘要（若数据源可用）。
+- OpenClaw TUI 不输出伪工具调用与空回复。
+
 ## 5. 命令接口规划
 
 保留并扩展 CLI：
@@ -215,6 +237,9 @@ python stock_analyzer.py --keyword 芯片 --min-turnover 3 --top 30
 
 # M2 已支持
 python stock_analyzer.py --scan --universe hs300 --top 20
+# M8 需求（价值投资）
+python stock_analyzer.py --value-scan --universe all --value-top 20
+python stock_analyzer.py 600519 --value --value-news-limit 5
 python -m app.cli portfolio --rebalance
 python -m app.cli report --daily
 ```
