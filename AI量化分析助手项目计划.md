@@ -10,7 +10,7 @@
 - M3（第3周）：已完成
 - M4（第4周）：已完成（已落地止损/止盈、风险日报、回撤熔断、行业集中度约束与单票权重上限）
 - M5（第5周）：已完成（已落地提示词拆分 + JSON schema + 安全规则 + 分析导出与齐全率统计 + 低温度稳定性评估并通过）
-- M6（第6周）：未开始
+- M6（第6周）：已完成（Plotly Dashboard MVP + OpenClaw 指令模板固化 + 使用/运维手册交付 + CI 冒烟验收）
 
 ## 1. 项目目标
 
@@ -168,6 +168,8 @@ openclaw-finance/
 
 - 支持桌面端和移动端基础浏览
 - 新用户按文档可在 30 分钟内跑通主流程
+
+当前状态：已完成（已新增 `dashboard/app.py`，支持 `python -m dashboard.app` 生成 `dashboard/dist/index.html`，包含单股分析、候选池评分、组合回测、风险日报四个板块；已补 `make dashboard` 快捷入口；已新增 `skills/stock-analyst/SKILL.md` 与 `docs/openclaw_templates.md` 固化 OpenClaw 分析/扫描/回测/风控模板，并明确单次触发、防重复、超时与失败回退策略；已新增 `docs/user_guide.md` 与 `docs/ops_runbook.md` 形成可交付手册，并接入 `.github/workflows/ci.yml` + `tests/fixtures/skill_output_ok.txt` 完成严格冒烟验收）
 
 ## 5. 命令接口规划
 
