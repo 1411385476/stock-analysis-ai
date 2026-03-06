@@ -27,6 +27,12 @@ jobs:
         run: |
           python -m unittest discover -s tests -v
 
+      - name: Strategy Regression Snapshot
+        run: |
+          python scripts/check_strategy_regression.py \
+            --baseline tests/fixtures/strategy_regression_baseline.json \
+            --output /tmp/strategy_regression_latest.json
+
       - name: Skill Smoke Check (strict)
         run: |
           make smoke-skill SMOKE_OUTPUT=tests/fixtures/skill_output_ok.txt SMOKE_STRICT=1

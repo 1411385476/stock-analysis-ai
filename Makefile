@@ -4,7 +4,7 @@ ARGS ?=
 SMOKE_OUTPUT ?= /tmp/stock_skill_output.txt
 SMOKE_STRICT ?= 0
 
-.PHONY: analyze test sync screen dashboard smoke-skill
+.PHONY: analyze test sync screen dashboard smoke-skill pipeline-daily regression-snapshot
 
 analyze:
 	$(PYTHON) stock_analyzer.py $(SYMBOL) $(ARGS)
@@ -20,6 +20,12 @@ screen:
 
 dashboard:
 	$(PYTHON) -m dashboard.app $(ARGS)
+
+pipeline-daily:
+	bash scripts/run_daily_pipeline.sh $(ARGS)
+
+regression-snapshot:
+	$(PYTHON) scripts/check_strategy_regression.py --baseline tests/fixtures/strategy_regression_baseline.json --output /tmp/strategy_regression_latest.json $(ARGS)
 
 smoke-skill:
 	@if [ ! -f "$(SMOKE_OUTPUT)" ]; then \
