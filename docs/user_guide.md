@@ -78,6 +78,31 @@ venv312/bin/python stock_analyzer.py \
 - 回测：`data/backtests/`
 - 风险：`data/risk_reports/`
 
+### 3.4.1 Walk-forward 滚动评估（M7 Week2）
+
+```bash
+venv312/bin/python stock_analyzer.py \
+  --portfolio-symbols 600519,000001,300750 \
+  --backtest \
+  --bt-grid \
+  --bt-grid-fee-rates 0.001,0.0015 \
+  --bt-grid-slippage-bps 4,8,12 \
+  --bt-grid-min-hold-days 2,3,5 \
+  --bt-grid-signal-confirm-days 1,2 \
+  --bt-grid-max-positions 1,2 \
+  --bt-walk-forward \
+  --bt-wf-train-days 126 \
+  --bt-wf-test-days 63 \
+  --bt-wf-step-days 21 \
+  --bt-save
+```
+
+输出说明：
+- 控制台追加 `Walk-forward评估` 摘要（窗口胜率、平均年化、最差回撤等）
+- 导出文件追加：
+  - `wf_portfolio_*.json`
+  - `wf_portfolio_*.md`
+
 ### 3.5 可视化看板
 
 ```bash
@@ -87,12 +112,66 @@ python -m dashboard.app --serve --port 8765
 打开浏览器访问：
 - `http://127.0.0.1:8765`
 
+### 3.6 日更流水线（M7 Week1）
+
+先做演练（不真正执行）：
+
+```bash
+bash scripts/run_daily_pipeline.sh --dry-run
+```
+
+正式执行：
+
+```bash
+make pipeline-daily
+```
+
+常用参数：
+
+```bash
+bash scripts/run_daily_pipeline.sh \
+  --single-symbol 600519 \
+  --portfolio-symbols 600519,000001,300750 \
+  --universe hs300 \
+  --top 20 \
+  --max-retries 2 \
+  --retry-delay-sec 15
+```
+
+输出位置（按日期分区）：
+- `data/pipeline_runs/YYYYMMDD/YYYYMMDD_HHMMSS/`
+- 健康状态：`data/pipeline_runs/latest_health.json`
+
+说明：
+- 当 `--universe hs300/zz500` 因网络原因无法加载成分股时，流水线会自动回退执行一次 `--universe all`，避免候选池面板为空。
+
+### 3.7 标准化 JSON 接口（M7 Week4）
+
+```bash
+venv312/bin/python stock_analyzer.py \
+  --standard-json-export \
+  --standard-json-data-dir data \
+  --standard-json-output data/api/standard_snapshot_latest.json
+```
+
+输出位置：
+- `data/api/standard_snapshot_latest.json`
+
+说明：
+- 该快照会聚合最新的 analysis/candidate/backtest/grid/walk-forward/risk 结果，供看板或外部系统直接消费。
+
 ## 4. OpenClaw 使用方式
 
 推荐在 OpenClaw TUI 中执行：
 
 ```text
 /skill stock-analyst 600519
+```
+
+执行日更流水线（推荐）：
+
+```text
+/skill pipeline-daily --skip-sync --max-retries 0
 ```
 
 期望结果：
@@ -127,6 +206,10 @@ make smoke-skill SMOKE_OUTPUT=/tmp/stock_skill_output.txt SMOKE_STRICT=1
 
 4. 输出出现 `NO_REPLY` 或维护提示
 - 参见运维手册，确认 memory flush 配置已关闭。
+
+5. 日更流水线失败
+- 查看 `data/pipeline_runs/latest_health.json` 的 `failure_reason`
+- 打开对应 `logs/*.log` 定位失败步骤
 
 ## 7. 风险声明
 仅供研究，不构成投资建议。

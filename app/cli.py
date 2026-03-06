@@ -13,6 +13,7 @@ from data.repository.snapshot_store import (
 )
 from llm.qwen_client import get_last_qwen_error, get_last_qwen_structured
 from llm.summarizer import evaluate_schema_completeness
+from report.standard_api import export_standard_snapshot
 
 
 def _is_error_text(text: object) -> bool:
@@ -31,6 +32,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--llm-stability-temperature", type=float, default=0.1, help="低温度稳定性评估温度，默认0.1")
     parser.add_argument("--analysis-save", action="store_true", help="导出单股分析记录（JSON/Markdown）")
     parser.add_argument("--analysis-output-dir", help="单股分析导出目录（默认 data/analysis_reports）")
+    parser.add_argument("--standard-json-export", action="store_true", help="导出标准化 JSON 快照（M7 Week4）")
+    parser.add_argument("--standard-json-data-dir", default=CONFIG.data_dir, help="标准化 JSON 数据目录（默认 data/）")
+    parser.add_argument("--standard-json-output", help="标准化 JSON 输出路径（默认 <data_dir>/api/standard_snapshot_latest.json）")
+    parser.add_argument("--standard-json-top", type=int, default=20, help="候选池标准输出 topN，默认20")
     parser.add_argument("--backtest", action="store_true", help="启用策略模板回测")
     parser.add_argument("--bt-fee-rate", type=float, default=0.001, help="回测手续费率（单边），默认0.001")
     parser.add_argument("--bt-slippage-bps", type=float, default=0.0, help="回测单边滑点（bps），默认0")
@@ -122,6 +127,17 @@ def has_screen_request(args: argparse.Namespace) -> bool:
 def main() -> int:
     setup_logging()
     args = parse_args()
+    if args.standard_json_export:
+        exported = export_standard_snapshot(
+            data_dir=args.standard_json_data_dir,
+            output_path=args.standard_json_output,
+            candidate_top_n=args.standard_json_top,
+        )
+        print("标准化JSON已导出:")
+        print(f"- JSON: {exported['json_path']}")
+        print(f"- Latest: {exported['latest_path']}")
+        return 0
+
     screen_requested = has_screen_request(args)
 
     if args.sync_a_share:
